@@ -1,0 +1,15 @@
+# Obsidian workspace settings
+.obsidian/workspace.json
+.obsidian/workspace
+.obsidian/plugins
+
+# Obsidian cache
+.obsidian/cache
+
+# Trash folder for deleted files
+.trash/
+
+# MacOS system files
+.DS_Store
+
+.smart-env/

@@ -1,0 +1,39 @@
+/* Document Maturity Styling */
+
+/* AI-Generated - Red */
+.callout[data-callout="robot"] {
+  --callout-color: 255, 59, 48;
+  --callout-icon: bot;  /* Changed from lucide-robot */
+}
+
+/* Draft - Blue */
+.callout[data-callout="draft"] {
+  --callout-color: 0, 122, 255;
+  --callout-icon: edit;  /* Changed from lucide-pencil */
+}
+
+/* In-Review - Yellow */
+.callout[data-callout="review"] {
+  --callout-color: 255, 204, 0;
+  --callout-icon: eye;  /* Changed from lucide-search */
+}
+
+/* Tested - Green */
+.callout[data-callout="tested"] {
+  --callout-color: 52, 199, 89;
+  --callout-icon: check;  /* Changed from lucide-check */
+}
+
+/* Stable - Purple */
+.callout[data-callout="stable"] {
+  --callout-color: 175, 82, 222;
+  --callout-icon: star;  /* Changed from lucide-star */
+}
+
+/* Add custom callout type for stable documents */
+.theme-light {
+  --callout-purple: 245, 235, 255;
+}
+.theme-dark {
+  --callout-purple: 45, 25, 60;
+}
