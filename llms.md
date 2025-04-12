@@ -20,3 +20,5 @@ In the vault, you will find these files that you can access to get additional in
 - [[sbt_build_practices]]: How we organize our SBT build files and module structure.
 - [[e2e_testing_with_playwright_zio]]: Our approach to end-to-end testing using Playwright with ZIO.
 - [[documentation_workflow]]: How we structure and maintain development logs, plans, feature files, and other documentation.
+
+When you run into problems, try to inspect [[lessones_learned]] document, there might be already a solution.
