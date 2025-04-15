@@ -32,9 +32,11 @@ export TESTCONTAINERS_HOST_OVERRIDE=your-remote-host
 Create a file at `~/.testcontainers.properties` with:
 
 ```properties
-docker.host=tcp://your-remote-host:2375
-docker.socket=/var/run/docker.sock
-host.override=your-remote-host
+docker.client.strategy=org.testcontainers.dockerclient.EnvironmentAndSystemPropertyClientProviderStrategy
+
+docker.host=tcp://193.86.200.14:2376
+docker.tls.verify=true
+docker.cert.path=/Users/mph/.docker/contexts/tls/c7ccc9baf0d00a8200202d17675e1dd2437985795e149d36ef035c5c9542ae28/docker
 ```
 
 ### Option 2: Configure Docker Context
@@ -52,7 +54,7 @@ docker context use remote-linux
 docker info
 ```
 
-With Docker contexts, TestContainers will automatically use the active Docker context.
+Java Testcontainers library unfortunately does not work with Docker contexts at the time.
 
 ## Setting Up the Remote Linux Host
 
