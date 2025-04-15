@@ -712,21 +712,38 @@ When using `orderBy`, prefer the string version with sort order parameter over s
 
 ## Repository Method Implementation Patterns
 
-### Query Method Pattern
+### Method Naming Convention
 
-When implementing query methods that return domain entities, follow this pattern:
+Use a clear naming convention for repository methods:
+
+- `find*` - Methods that return `Option[Entity]` or `Seq[Entity]` with no domain error
+- `get*` - Methods that return `Entity` and can fail with domain error if entity doesn't exist
 
 ```scala
-def getById(id: Long): ZIO[Any, DomainError, Entity] =
+// Option-returning find method (no domain error)
+def findById(id: Long): ZIO[Any, Nothing, Option[Entity]] =
     xa.connect {
-        // Database operation returning DTO
         repo.findById(id).map(_.toDomain)
-    }
-    .orDie  // Convert infrastructure errors to defects
-    .flatMap {
+    }.orDie
+
+// Entity-returning get method (domain error if not found)
+def getById(id: Long): ZIO[Any, DomainError, Entity] =
+    findById(id).flatMap {
         case Some(entity) => ZIO.succeed(entity)
         case None => ZIO.fail(EntityNotFoundError(id))
     }
+```
+
+### Query Method Pattern
+
+Always map DTO to domain model inside the database transaction:
+
+```scala
+def findById(id: Long): ZIO[Any, Nothing, Option[Entity]] =
+    xa.connect {
+        // Map to domain model inside the database operation
+        repo.findById(id).map(_.toDomain)
+    }.orDie
 ```
 
 ### Collection Query Pattern
@@ -734,37 +751,167 @@ def getById(id: Long): ZIO[Any, DomainError, Entity] =
 For methods returning collections, handle the mapping inside the database operation:
 
 ```scala
-def getAll(limit: Int): ZIO[Any, Throwable, Seq[Entity]] =
+def getAllPublished(limit: Int = 100): ZIO[Any, Nothing, Seq[Entity]] =
     xa.connect {
         val spec = Spec[EntityDTO]
-            .where(sql"active = true")
+            .where(sql"published = true")
             .orderBy("created_at", SortOrder.Desc)
             .limit(limit)
         repo.findAll(spec).map(_.toDomain)
     }.orDie
 ```
 
-### Error Handling Pattern
+### Creation vs. Full Entity DTOs
 
-Ensure proper error handling by mapping to domain-specific errors:
+Use separate DTOs for creation operations and entity representation:
+
+```scala
+// DTO for database representation
+@SqlName("entities")
+@Table(PostgresDbType, SqlNameMapper.CamelToSnakeCase)
+case class EntityDTO(
+    @Id id: Long,
+    name: String,
+    createdAt: Timestamp
+) derives DbCodec:
+    def toDomain: Entity = Entity(id, name, createdAt.toLocalDateTime)
+
+// DTO for creating new entities
+@Table(PostgresDbType, SqlNameMapper.CamelToSnakeCase)
+case class CreateEntityDTO(
+    name: String,
+    createdAt: Timestamp
+)
+
+object EntityDTO:
+    // Convert from domain to DTO
+    def fromDomain(entity: Entity): EntityDTO = 
+        EntityDTO(entity.id, entity.name, Timestamp.valueOf(entity.createdAt))
+        
+    // Create DTO from creation data
+    def fromCreate(create: CreateEntity): CreateEntityDTO =
+        CreateEntityDTO(create.name, Timestamp.valueOf(LocalDateTime.now()))
+```
+
+### Validating Uniqueness Within Transactions
+
+Keep all database operations within a single transaction for consistency:
 
 ```scala
 def save(entity: CreateEntity): ZIO[Any, DomainError, Long] =
-    ZIO.fromEither(entity.validate).flatMap { validEntity =>
-        // Domain validation passed, proceed with database operation
-        xa.transact {
-            repo.insertReturning(EntityDTO.fromCreate(validEntity)).id
-        }.mapError(e => DomainError.CreationFailed(e.getMessage))
-    }
+    // Validate entity according to domain rules
+    ZIO.fromEither(entity.validate).flatMap(insertEntity)
+
+private def insertEntity(entity: CreateEntity): ZIO[Any, DomainError, Long] =
+    xa.transact {
+        // Do all validation within the transaction
+        validateUniqueName(entity.name) match
+            case Left(err) => throw err
+            case _         => repo.insertReturning(EntityDTO.fromCreate(entity)).id
+    }.refineToOrDie[DomainError]
+
+// Helper method that takes implicit database connection
+private def validateUniqueName(name: String)(using DbCon): Either[DomainError, Unit] =
+    val spec = Spec[EntityDTO].where(sql"name = $name")
+    val exists = repo.findAll(spec).nonEmpty
+    if exists then Left(DomainError.DuplicateNameError(name)) else Right(())
 ```
 
-For conditional checks that might fail:
+### Error Handling with refineToOrDie
+
+Use `refineToOrDie` to handle expected domain errors while treating other exceptions as defects:
 
 ```scala
-existsByField(field).flatMap { exists =>
-    if exists then ZIO.fail(DomainError.DuplicateFieldError(field))
-    else executeOperation()
-}.orDie  // Add orDie for infrastructure errors
+def update(update: UpdateEntity): ZIO[Any, DomainError, Unit] =
+    xa.transact {
+        val process = for
+            currentDTO <- repo.findById(update.id).toRight(EntityNotFoundError(update.id))
+            current = currentDTO.toDomain
+            _ <- validateUpdate(current, update)
+            updated = update.applyTo(current)
+        yield repo.update(EntityDTO.fromDomain(updated))
+        
+        process match
+            case Left(err) => throw err
+            case _         => ()
+    }.refineToOrDie[DomainError]
+```
+
+## Repository Companion Object Pattern
+
+The repository companion object should define the Magnum repository instance and provide layers for dependency injection:
+
+```scala
+object PostgreSQLEntityRepository:
+    // Create Repo with separate CreateDTO and EntityDTO types
+    // CreateDTO is used for insertions, EntityDTO for reading and updating
+    val repo = Repo[CreateEntityDTO, EntityDTO, Long]
+
+    // Layer that provides repository implementation using PostgreSQLTransactor
+    val layer: ZLayer[PostgreSQLTransactor, Nothing, EntityRepository] =
+        ZLayer.fromFunction { (transactor: PostgreSQLTransactor) =>
+            new PostgreSQLEntityRepository(transactor.transactor)
+        }
+end PostgreSQLEntityRepository
+```
+
+Note how we specify both the creation DTO and the entity DTO in the `Repo` definition, which enables proper type-safe operations for both insertions and queries.
+
+## Schema Naming with SqlName Annotation
+
+Use the `@SqlName` annotation to explicitly name database tables rather than relying on automatic naming:
+
+```scala
+// Explicitly name the table "xml_snapshots"
+@SqlName("xml_snapshots")
+@Table(PostgresDbType, SqlNameMapper.CamelToSnakeCase)
+case class XmlSnapshotDTO(
+    @Id id: Long,
+    content: String,
+    // ... other fields
+)
+```
+
+This practice makes it clear which table the DTO maps to and prevents naming discrepancies.
+
+## Integration Testing Patterns
+
+### Test Structure
+
+Organize your integration tests with clear, descriptive test names and proper layer setup:
+
+```scala
+def spec = (suite("PostgreSQLEntityRepository")(
+    test("should save and retrieve an entity by ID") {
+        for
+            repository <- ZIO.service[EntityRepository]
+            entity = CreateEntity("test-entity", Some("description"))
+            id <- repository.save(entity)
+            retrieved <- repository.getById(id)
+        yield assertTrue(
+            retrieved.name == "test-entity",
+            retrieved.description.contains("description")
+        )
+    },
+    // More tests...
+) @@ TestAspect.sequential @@ TestAspect.withLiveClock @@ MigrateAspects.migrate).provideSomeShared[
+    Scope
+](
+    PostgreSQLTestingLayers.flywayMigrationServiceLayer,
+    PostgreSQLEntityRepository.layer
+)
+```
+
+### Test Assertions
+
+Use ZIO Test assertions for cleaner and more expressive tests:
+
+```scala
+// For option values, use is matcher with_.some helper
+assertTrue(
+    latest.is(_.some).content == "expected content",
+    latest.is(_.some).id == expectedId
+)
 ```
 
 ## Layer Organization with PostgreSQL Infrastructure
@@ -791,7 +938,7 @@ yourSpec
     .provideSomeShared[Scope](
         PostgreSQLTestingLayers.flywayMigrationServiceLayer,
         YourRepository.layer
-    ) @@ TestAspect.sequential @@ MigrateAspects.migrate
+    ) @@ TestAspect.sequential @@ TestAspect.withLiveClock @@ MigrateAspects.migrate
 ```
 
 This ensures proper database setup and teardown for tests.
