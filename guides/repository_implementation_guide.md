@@ -35,40 +35,116 @@ Our codebase follows a repository pattern based on CQRS (Command Query Responsib
 
 ### Repository Traits Hierarchy
 
-Our repository design is based on composable traits with clear responsibilities:
+Our repository design is based on composable traits with clear responsibilities. The hierarchy is defined in our core library:
 
 ```scala
-GenericReadRepository
-  ├── GenericLoadService
-  ├── GenericLoadAllService
-  └── GenericFindService
-  
-GenericWriteRepository
-  └── save(key, value): Op[Unit]
-  
-CreateRepository
-  └── create(value): Op[Key]
+// Basic service traits
+trait GenericLoadService[Eff[+_], -Key, +Value]:
+    type Op[A] = Eff[A]
+    def load(id: Key): Op[Option[Value]]
+
+trait GenericUpdateNotifyService[Str[+_], Key]:
+    def updates: Str[Key]
+
+trait GenericLoadAllService[Eff[+_], Coll[+_], -Key, +Value]:
+    type Op[A] = Eff[A]
+    def loadAll(ids: Seq[Key]): Op[Coll[Value]]
+
+trait GenericFindService[Eff[+_], Coll[+_], -Key, +Value, -FilterArg]:
+    type Op[A] = Eff[A]
+    def find(filter: FilterArg): Op[Coll[Value]]
+
+// Read repository combines load, loadAll, and find operations
+trait GenericReadRepository[Eff[+_], Coll[+_], -Key, +Value, -FilterArg]
+    extends GenericLoadService[Eff, Key, Value]
+    with GenericLoadAllService[Eff, Coll, Key, Value]
+    with GenericFindService[Eff, Coll, Key, Value, FilterArg]
+
+// Write repository for saving existing entities
+trait GenericWriteRepository[Eff[_], -Key, -Value]:
+    type Op[A] = Eff[A]
+    def save(key: Key, value: Value): Op[Unit]
+
+// Marker trait for creation DTOs
+trait Create[A]
+
+// Repository for creating new entities
+trait GenericCreateRepository[Eff[+_], +Key, -Init]:
+    type Op[A] = Eff[A]
+    def create(value: Init): Op[Key]
+
+// Write repository with key assignment
+trait GenericWriteRepositoryWithKeyAssignment[Eff[+_], +Key, -Value]:
+    type Op[A] = Eff[A]
+    def save(value: Value): Op[Key]
+    def save(value: Key => Value): Op[Key]
+
+// Combined read and write repository
+trait GenericRepository[Eff[+_], -Key, Value]
+    extends GenericReadRepository[Eff, Seq, Key, Value, Unit]
+    with GenericWriteRepository[Eff, Key, Value]
 ```
 
 ### Key Repository Types
 
+Our framework provides specialized repository types for ZIO integration using `UIO` for operations:
+
 #### Read Operations
 
-- **LoadRepository**: Load a single entity by key
-- **ReadRepository**: Complete read operations (load/loadAll/find)
-- **UpdateNotifyRepository**: Stream of entity updates
+```scala
+// Basic load repository
+type LoadRepository[-Key, +Value] = GenericLoadService[UIO, Key, Value]
+
+// Load multiple entities by keys
+type LoadAllRepository[-Key, +Value] = GenericLoadAllService[UIO, Seq, Key, Value]
+
+// Complete read operations
+trait ReadRepository[-Key, +Value, -FilterArg]
+    extends GenericReadRepository[UIO, Seq, Key, Value, FilterArg]:
+    override def loadAll(ids: Seq[Key]): UIO[Seq[Value]] =
+        // Inefficient implementation, meant to be overridden
+        ZIO.foreach(ids)(load).map(_.flatten)
+
+// Repository for notifications on updates
+trait UpdateNotifyRepository[Key]
+    extends GenericUpdateNotifyService[UStream, Key]
+```
 
 #### Write Operations
 
-- **WriteRepository**: Update existing entities
-- **CreateRepository**: Create new entities with generated keys
-- **WriteRepositoryWithKeyAssignment**: Variant that handles key generation
+```scala
+// Basic write repository
+trait WriteRepository[-Key, -Value]
+    extends GenericWriteRepository[UIO, Key, Value]
+
+// Repository for creating new entities
+trait CreateRepository[+Key, -Init]
+    extends GenericCreateRepository[UIO, Key, Init]
+
+// Write repository with automatic key assignment
+trait WriteRepositoryWithKeyAssignment[Key, -Value]
+    extends GenericWriteRepositoryWithKeyAssignment[UIO, Key, Value]
+```
 
 #### Combined Repositories
 
-- **Repository**: Standard read/write operations
-- **RepositoryWithCreate**: Standard repository with creation capability
-- **RepositoryWithKeyAssignment**: Repository with key generation
+```scala
+// Standard read/write repository
+trait Repository[-Key, Value, -FilterArg]
+    extends ReadRepository[Key, Value, FilterArg]
+    with WriteRepository[Key, Value]
+
+// Repository with creation capability
+trait RepositoryWithCreate[Key, Value, -FilterArg, -Init <: Create[Value]]
+    extends ReadRepository[Key, Value, FilterArg]
+    with WriteRepository[Key, Value]
+    with CreateRepository[Key, Init]
+
+// Repository with key generation
+trait RepositoryWithKeyAssignment[Key, Value, -FilterArg]
+    extends ReadRepository[Key, Value, FilterArg]
+    with WriteRepositoryWithKeyAssignment[Key, Value]
+```
 
 ### CQRS Principles
 
@@ -317,29 +393,135 @@ override def find(query: AccountQuery): UIO[Seq[SourceAccount]] =
   .orDie
 ```
 
-## Transactor Configuration
+## Infrastructure Setup and Transactor Configuration
 
-The correct way to create a ZLayer for the Transactor is to compose it with your DataSource layer:
+Our project provides standardized infrastructure components for PostgreSQL database access that should be used for repository implementations.
+
+### PostgreSQL Infrastructure Components
+
+We have three main infrastructure components for database access:
+
+1. **PostgreSQLDataSource** - Manages the HikariCP connection pool for PostgreSQL
+2. **PostgreSQLTransactor** - Wraps a Magnum Transactor for performing database operations
+3. **PostgreSQLDatabaseSupport** - Provides combined layers and migration utilities
+
+### Standard Repository Layer Structure
+
+For all repository implementations, follow this layer structure pattern:
 
 ```scala
-// CORRECT APPROACH - Use ZLayer.service + flatMap
-val transactorLayer: ZLayer[DataSource & Scope, Throwable, Transactor] =
-  ZLayer.service[DataSource].flatMap { env => 
-      Transactor.layer(env.get[DataSource])
-  }
+object PostgreSQLTransactionRepository:
+    // Repository layer taking only the PostgreSQLTransactor dependency
+    val layer: ZLayer[PostgreSQLTransactor, Nothing, TransactionRepository] =
+        ZLayer.fromFunction { (ts: PostgreSQLTransactor) =>
+            PostgreSQLTransactionRepository(ts.transactor)
+        }
 
-// Repository layer organization
-val repositoryLayer: ZLayer[Transactor, Nothing, TransactionRepository] =
-    ZLayer.fromFunction { (xa: Transactor) =>
-        PostgreSQLTransactionRepository(xa)
-    }
-
-// Full layer including all dependencies
-val fullLayer: ZLayer[Scope, Throwable, TransactionRepository] =
-    dataSourceLayer >>>
-        transactorLayer >>>
-        repositoryLayer
+    // Full layer including all dependencies from scratch
+    val fullLayer: ZLayer[Scope, Throwable, TransactionRepository] =
+        PostgreSQLDataSource.managedLayer >>>
+            PostgreSQLTransactor.managedLayer >>>
+            layer
 ```
+
+This pattern provides both a targeted layer that only depends on the transactor (useful for integration testing) and a complete layer that sets up the entire database stack.
+
+### Database Migrations with Flyway
+
+We use Flyway for database migrations, providing a structured way to evolve the database schema. Our project includes a `FlywayMigrationService` that wraps Flyway's functionality and integrates with our ZIO environment:
+
+```scala
+trait FlywayMigrationService:
+    def migrate(): Task[MigrateResult]  // Apply pending migrations
+    def clean(): Task[Unit]             // Clean/reset the database
+    def validate(): Task[Unit]          // Validate migrations
+    def info(): Task[Unit]              // Print migration info
+```
+
+The migration service is configured with a `FlywayConfig` that specifies migration locations and other options:
+
+```scala
+case class FlywayConfig(
+    locations: List[String] = List(FlywayConfig.DefaultLocation),
+    cleanDisabled: Boolean = true
+)
+
+object FlywayConfig:
+    val DefaultLocation = "classpath:db/migration"
+    val default: FlywayConfig = FlywayConfig()
+```
+
+### Using PostgreSQLDatabaseSupport for Migrations
+
+For production code that requires migrations, use the `PostgreSQLDatabaseSupport` to ensure migrations run before database access:
+
+```scala
+// Example of a repository layer that requires migrations to run first
+val repositoryLayerWithMigrations: ZLayer[Scope, Throwable, TransactionRepository] =
+    PostgreSQLDatabaseSupport.layerWithMigrations() >>> 
+        PostgreSQLTransactionRepository.layer
+        
+// To specify additional migration locations
+val repositoryLayerWithCustomMigrations: ZLayer[Scope, Throwable, TransactionRepository] =
+    PostgreSQLDatabaseSupport.layerWithMigrations(
+        additionalLocations = List("classpath:db/specific-migrations")
+    ) >>> PostgreSQLTransactionRepository.layer
+```
+
+The `layerWithMigrations` method:
+1. Creates a PostgreSQL data source
+2. Sets up a Flyway migration service
+3. Runs all migrations before providing the infrastructure
+4. Returns a combined layer with both the database infrastructure and migration service
+
+### Migration File Organization
+
+Flyway migrations should be placed in the `src/main/resources/db/migration` directory with file names following the format:
+
+- `V{version}__{description}.sql` - For versioned migrations (e.g., `V1__create_users_table.sql`)
+- `R__{description}.sql` - For repeatable migrations (e.g., `R__views.sql`)
+
+Versioned migrations run in order based on the version number, while repeatable migrations run whenever their content changes.
+
+### PostgreSQLDataSource Implementation
+
+The `PostgreSQLDataSource` class manages a connection pool using HikariCP:
+
+```scala
+class PostgreSQLDataSource(val dataSource: DataSource)
+
+object PostgreSQLDataSource:
+    // Initialize a HikariCP data source with configuration
+    def initDataSource(config: PostgreSQLConfig): ZIO[Scope, Throwable, HikariDataSource] = ...
+
+    // Layer that creates a DataSource from configuration
+    val layer: ZLayer[Scope, Throwable, DataSource] = ...
+
+    // Layer that creates a managed PostgreSQLDataSource instance
+    val managedLayer: ZLayer[Scope, Throwable, PostgreSQLDataSource] =
+        layer >>> ZLayer.fromFunction(PostgreSQLDataSource.apply)
+```
+
+### PostgreSQLTransactor Implementation
+
+The `PostgreSQLTransactor` creates and manages a Magnum Transactor:
+
+```scala
+class PostgreSQLTransactor(val transactor: Transactor)
+
+object PostgreSQLTransactor:
+    // Layer that creates a Transactor from a PostgreSQLDataSource
+    val layer: ZLayer[PostgreSQLDataSource & Scope, Throwable, Transactor] =
+        ZLayer.service[PostgreSQLDataSource].flatMap { env =>
+            Transactor.layer(env.get[PostgreSQLDataSource].dataSource)
+        }
+
+    // Layer that creates a managed PostgreSQLTransactor instance
+    val managedLayer: ZLayer[PostgreSQLDataSource & Scope, Throwable, PostgreSQLTransactor] =
+        layer >>> ZLayer.fromFunction(PostgreSQLTransactor.apply)
+```
+
+For repository implementations, always use the `PostgreSQLTransactor.managedLayer` to create the transactor and inject it into your repository implementation. This ensures consistent configuration and connection pooling across all repositories.
 
 ## Dynamic Queries with Magnum Spec
 
@@ -383,65 +565,154 @@ override def find(filter: TransactionQuery): UIO[Seq[Transaction]] =
 
 ## Testing Approach
 
-Repository Implementations require thorough integration testing:
+We have standardized infrastructure for testing repositories using TestContainers, Flyway migrations, and ZIO Test.
 
-### Integration Testing with TestContainers
+### Testing Infrastructure
+
+Our `iw-support-sqldb-testing` module provides several key components for testing repositories:
+
+1. **PostgreSQLTestingLayers** - Provides ZLayers for test database infrastructure  
+2. **MigrateAspects** - Test aspects for database schema setup and teardown
+
+### Standard Repository Testing Pattern
+
+Use this pattern for testing repository implementations using ZIO Test:
 
 ```scala
-import org.scalatest.funsuite.AsyncFunSuite
-import org.scalatest.matchers.should.Matchers
-import org.scalatest.BeforeAndAfterAll
-import org.testcontainers.containers.PostgreSQLContainer
-import zio.{Runtime, Unsafe, ZIO}
-import com.augustnagro.magnum.*
-import com.augustnagro.magnum.magzio.*
+import zio.*
+import zio.test.*
+import works.iterative.sqldb.testing.PostgreSQLTestingLayers.*
+import works.iterative.sqldb.testing.MigrateAspects.*
 
-class PostgreSQLAccountRepositorySpec extends AsyncFunSuite with Matchers with BeforeAndAfterAll:
-  // Start PostgreSQL container
-  val postgres = new PostgreSQLContainer("postgres:14")
-  postgres.start()
+object PostgreSQLTransactionRepositorySpec extends ZIOSpecDefault:
+    // Define layers needed for repository tests
+    val repositoryLayer =
+        PostgreSQLTransactionRepository.layer ++
+        PostgreSQLSourceAccountRepository.layer
   
-  // Set up data source
-  val dataSource: javax.sql.DataSource = {
-    val ds = new com.zaxxer.hikari.HikariDataSource()
-    ds.setJdbcUrl(postgres.getJdbcUrl)
-    ds.setUsername(postgres.getUsername)
-    ds.setPassword(postgres.getPassword)
-    ds
-  }
-  
-  // Set up transactor
-  val xa = Transactor(dataSource)
-  
-  // Run migrations to set up schema
-  val flyway = Flyway.configure()
-    .dataSource(dataSource)
-    .locations("classpath:db/migration")
-    .load()
-  
-  flyway.migrate()
-  
-  // Create repository
-  val repository = new PostgreSQLAccountRepository(xa)
-  
-  // Helper to run ZIO effects in tests
-  def unsafeRun[E, A](zio: ZIO[Any, E, A]): A =
-    Unsafe.unsafe { implicit unsafe =>
-      Runtime.default.unsafe.run(zio).getOrThrowFiberFailure()
-    }
-  
-  // Clean up after tests
-  override def afterAll(): Unit =
-    dataSource.asInstanceOf[com.zaxxer.hikari.HikariDataSource].close()
-    postgres.stop()
-  
-  // Tests
-  test("save should insert a new account") {
-    // Test implementation
-  }
-  
-  // Additional tests...
+    def spec = {
+        suite("PostgreSQLTransactionRepository")(
+            test("should save and retrieve a transaction") {
+                for
+                    // Get repository services
+                    repo <- ZIO.service[TransactionRepository]
+                    
+                    // Create test data
+                    transaction = createSampleTransaction
+                    
+                    // Execute operations
+                    _ <- repo.save(transaction.id, transaction)
+                    retrieved <- repo.load(transaction.id)
+                yield
+                    // Assert results
+                    assertTrue(
+                        retrieved.isDefined,
+                        retrieved.get.id == transaction.id
+                    )
+            },
+            
+            test("should find transactions by filter") {
+                for
+                    repo <- ZIO.service[TransactionRepository]
+                    
+                    // Create test data
+                    tx1 = createSampleTransaction
+                    tx2 = tx1.copy(id = TransactionId("TX2"), amount = 200.0)
+                    
+                    // Save test data
+                    _ <- repo.save(tx1.id, tx1)
+                    _ <- repo.save(tx2.id, tx2)
+                    
+                    // Query with filter
+                    results <- repo.find(TransactionQuery(
+                        amountMin = Some(150.0)
+                    ))
+                yield
+                    assertTrue(
+                        results.size == 1,
+                        results.head.id == tx2.id
+                    )
+            }
+        // Apply aspects for all tests
+        ) @@ sequential @@ migrate
+    }.provideSomeShared[Scope](
+        // Provide infrastructure layers
+        flywayMigrationServiceLayer,
+        repositoryLayer
+    )
+end PostgreSQLTransactionRepositorySpec
 ```
+
+### Key Testing Infrastructure Components
+
+#### PostgreSQLTestingLayers
+
+Provides ZLayers for TestContainers and database infrastructure:
+
+```scala
+object PostgreSQLTestingLayers:
+    // Container for PostgreSQL test database
+    val postgresContainer: ZLayer[Scope, Throwable, PostgreSQLContainer] = ...
+    
+    // DataSource connected to test container
+    val dataSourceLayer: ZLayer[Scope, Throwable, DataSource] = ...
+    
+    // PostgreSQLDataSource layer
+    val postgreSQLDataSourceLayer: ZLayer[Scope, Throwable, PostgreSQLDataSource] = ...
+    
+    // Transactor layer for database operations
+    val transactorLayer: ZLayer[Scope, Throwable, Transactor] = ...
+    
+    // Combined layer with both DataSource and Transactor
+    val postgreSQLTransactorLayer: ZLayer[Scope, Throwable, PostgreSQLDataSource & PostgreSQLTransactor] = ...
+    
+    // Test Flyway config that allows cleaning the database
+    val testFlywayConfig = FlywayConfig(
+        locations = FlywayConfig.DefaultLocation :: Nil,
+        cleanDisabled = false
+    )
+    
+    // Full layer with DataSource, Transactor and FlywayMigrationService
+    val flywayMigrationServiceLayer: ZLayer[
+        Scope,
+        Throwable,
+        PostgreSQLDataSource & PostgreSQLTransactor & FlywayMigrationService
+    ] = ...
+end PostgreSQLTestingLayers
+```
+
+#### MigrateAspects
+
+Provides test aspects for database setup and teardown:
+
+```scala
+object MigrateAspects:
+    // Set up fresh database schema for tests
+    val setupDbSchema = ZIO.scoped {
+        for
+            migrationService <- ZIO.service[FlywayMigrationService]
+            // Clean the database to ensure a fresh state
+            _ <- migrationService.clean()
+            // Run migrations to set up the schema
+            result <- migrationService.migrate()
+        yield ()
+    }
+
+    // Test aspect that runs migrations before tests
+    val migrate = TestAspect.before(setupDbSchema)
+end MigrateAspects
+```
+
+### Testing Best Practices
+
+1. **Clean State per Test** - Apply the `migrate` aspect to ensure each test suite starts with a clean database
+2. **Sequential Tests** - Use `sequential` aspect to prevent test interference when accessing the database
+3. **Layer Structure** - Separate repository layers from infrastructure layers for flexible testing
+4. **Realistic Data** - Test with realistic data samples that cover edge cases
+5. **Query Testing** - Test complex queries with various filter combinations
+6. **Error Handling** - Test error scenarios like constraint violations
+
+This approach ensures that repository implementations are thoroughly tested against real PostgreSQL databases with proper schema migrations, while keeping the tests maintainable and reliable.
 
 ## Common Pitfalls
 
