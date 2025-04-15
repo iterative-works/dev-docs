@@ -1,16 +1,33 @@
 ---
-status: ai-generated
-created: 2025-04-06
-last updated: 2025-04-06
+status: draft
+created: 2025-04-15
+last updated: 2025-04-15
 version: "0.1"
 ---
-> [!danger] AI-Generated Content
-> This is AI-generated content pending human review. Information may be inaccurate or misaligned with actual processes.
-# Using Remote Docker Hosts with TestContainers
+> [!draft] Draft Document
+> This document is an initial draft and may change significantly.
+
+# Using Remote Docker Hosts with TestContainers in Java
 
 ## Overview
 
 When working with containers that don't support Apple Silicon (like MS SQL Server), connecting to a remote Linux Docker host is an excellent solution. This approach lets you run x86_64 containers natively on a compatible system while developing on your Mac.
+
+## Configuration Hierarchy
+
+Java TestContainers loads configuration from multiple locations in the following priority order:
+
+1. **Environment variables** - Must be in uppercase with underscores, preceded by `TESTCONTAINERS_` 
+   (e.g., `checks.disable` becomes `TESTCONTAINERS_CHECKS_DISABLE`)
+2. **`.testcontainers.properties` in user's home folder**
+   - Linux: `/home/myuser/.testcontainers.properties`
+   - Windows: `C:/Users/myuser/.testcontainers.properties`
+   - macOS: `/Users/myuser/.testcontainers.properties`
+3. **`testcontainers.properties` on the classpath** (e.g., in `src/test/resources`)
+
+If multiple classpath configuration files exist, they are merged with the following precedence:
+- Files on the 'local' classpath (URLs starting with `file:`) take priority
+- Files in JAR dependencies are considered in alphabetical order of path
 
 ## Configuration Options
 
@@ -27,17 +44,33 @@ export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
 export TESTCONTAINERS_HOST_OVERRIDE=your-remote-host
 ```
 
+In Java code, you can also set these programmatically:
+
+```java
+// Set system properties for the JVM
+System.setProperty("DOCKER_HOST", "tcp://your-remote-host:2375");
+System.setProperty("TESTCONTAINERS_HOST_OVERRIDE", "your-remote-host");
+
+// Then create your container
+MySQLContainer<?> mysql = new MySQLContainer<>("mysql:8.0");
+mysql.start();
+```
+
 #### Using Properties File
 
 Create a file at `~/.testcontainers.properties` with:
 
 ```properties
+# Use the EnvironmentAndSystemPropertyClientProviderStrategy for advanced configuration
 docker.client.strategy=org.testcontainers.dockerclient.EnvironmentAndSystemPropertyClientProviderStrategy
 
-docker.host=tcp://193.86.200.14:2376
+# Configure Docker host connection (escape colons with backslashes)
+docker.host=tcp\://193.86.200.14:2376
 docker.tls.verify=true
-docker.cert.path=/Users/mph/.docker/contexts/tls/c7ccc9baf0d00a8200202d17675e1dd2437985795e149d36ef035c5c9542ae28/docker
+docker.cert.path=/Users/username/.docker/contexts/tls/c7ccc9baf0d00a8200202d17675e1dd2437985795e149d36ef035c5c9542ae28/docker
 ```
+
+Or alternatively, you can place this configuration in your project's `src/test/resources/testcontainers.properties` file to share it with your team.
 
 ### Option 2: Configure Docker Context
 
@@ -54,7 +87,7 @@ docker context use remote-linux
 docker info
 ```
 
-Java Testcontainers library unfortunately does not work with Docker contexts at the time.
+Note: Java Testcontainers library does not work directly with Docker contexts at this time. You'll need to use the configuration options above.
 
 ## Setting Up the Remote Linux Host
 
@@ -115,6 +148,73 @@ ssh-copy-id username@your-remote-host
 
 # Test connection
 ssh username@your-remote-host
+```
+
+## Java TestContainers Examples
+
+### Basic Java Example
+
+```java
+import org.testcontainers.containers.MSSQLServerContainer;
+import org.junit.jupiter.api.Test;
+
+class MSSQLTest {
+    
+    static {
+        // Configure TestContainers to use remote Docker host
+        System.setProperty("DOCKER_HOST", "tcp://your-remote-host:2375");
+        System.setProperty("TESTCONTAINERS_HOST_OVERRIDE", "your-remote-host");
+    }
+    
+    @Test
+    void testWithSQL() {
+        try (MSSQLServerContainer<?> mssql = new MSSQLServerContainer<>("mcr.microsoft.com/mssql/server:2022-latest")
+                .withPassword("Strong.Password-123")
+                .withInitScript("init-script.sql")) {
+            
+            mssql.start();
+            
+            // Get the mapped host and port
+            String host = mssql.getHost(); // This will be your remote host, not localhost
+            Integer port = mssql.getMappedPort(1433);
+            
+            String jdbcUrl = String.format("jdbc:sqlserver://%s:%d;databaseName=master", host, port);
+            // Use the connection in your tests
+        }
+    }
+}
+```
+
+### JUnit 5 Extension Example
+
+```java
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+@Testcontainers
+class PostgresTest {
+    
+    static {
+        // Configure TestContainers to use remote Docker host
+        System.setProperty("DOCKER_HOST", "tcp://your-remote-host:2375");
+        System.setProperty("TESTCONTAINERS_HOST_OVERRIDE", "your-remote-host");
+    }
+    
+    @Container
+    private PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:14")
+            .withDatabaseName("test")
+            .withUsername("test")
+            .withPassword("test");
+    
+    @Test
+    void testWithPostgres() {
+        // The container is started automatically
+        String jdbcUrl = postgres.getJdbcUrl();
+        // Use postgres in your test
+    }
+}
 ```
 
 ## ZIO TestContainers Integration for Remote Hosts
@@ -182,13 +282,13 @@ When using a remote Docker host:
 
 3. **Container Networking**: Use the following approach to get the correct host and port:
 
-```scala
+```java
 // Get the mapped host and port
-val host = container.getHost
-val port = container.getMappedPort(1433)
+String host = container.getHost();        // Returns the remote host address
+Integer port = container.getMappedPort(1433);
 
 // Use these for your connection string
-val jdbcUrl = s"jdbc:sqlserver://$host:$port;databaseName=master"
+String jdbcUrl = String.format("jdbc:sqlserver://%s:%d;databaseName=master", host, port);
 ```
 
 ## Security Considerations
@@ -203,6 +303,15 @@ When exposing Docker API remotely:
 sudo dockerd --tlsverify --tlscacert=ca.pem --tlscert=server-cert.pem --tlskey=server-key.pem -H=0.0.0.0:2376
 ```
 
+Then update your TestContainers configuration:
+
+```properties
+docker.client.strategy=org.testcontainers.dockerclient.EnvironmentAndSystemPropertyClientProviderStrategy
+docker.host=tcp\://your-remote-host:2376
+docker.tls.verify=true
+docker.cert.path=/path/to/your/certs
+```
+
 3. **SSH Tunneling**: A more secure alternative is to use SSH tunneling instead of exposing the Docker API directly:
 
 ```bash
@@ -210,6 +319,30 @@ sudo dockerd --tlsverify --tlscacert=ca.pem --tlscert=server-cert.pem --tlskey=s
 ssh -L 2375:localhost:2375 username@your-remote-host
 
 # Then use localhost:2375 as your DOCKER_HOST
+```
+
+## Disabling Features (Additional Configuration)
+
+### Disable Startup Checks
+
+Add to your properties file to speed up tests once everything is working:
+
+```properties
+checks.disable=true
+```
+
+Or via environment variable:
+
+```bash
+export TESTCONTAINERS_CHECKS_DISABLE=true
+```
+
+### Disable Ryuk Resource Reaper
+
+If your environment already has container cleanup but doesn't allow privileged containers:
+
+```bash
+export TESTCONTAINERS_RYUK_DISABLED=true
 ```
 
 ## CI/CD Integration
