@@ -1,10 +1,11 @@
 ---
-status: maintained
-last updated: 2023-05-20
-version: "1.0"
+status: in-review
+created: 2025-05-13
+last updated: 2025-04-15
+version: "1.1"
 ---
 
-# Implementation Guide: Repository Implementation
+# Implementation Guide: Domain-Driven Repository Implementation
 
 ## Purpose and Responsibilities
 
@@ -29,141 +30,74 @@ Repository Implementations should NOT:
 - Use any persistence concepts in their public interfaces
 - Bypass domain entities by returning raw data structures
 
-## Repository Pattern in Our Project
+## Repositories in Domain-Driven Design
 
-Our codebase follows a repository pattern based on CQRS (Command Query Responsibility Segregation) principles for data access. We have a specific repository traits hierarchy to promote consistent implementation.
+In alignment with our Functional Core/Imperative Shell architecture and Domain-Driven Design principles, repositories serve as the boundary between the pure domain model and the infrastructure layer. They act as a collection-like interface for accessing domain objects while hiding the details of the underlying persistence mechanism.
 
-### Repository Traits Hierarchy
+### Domain-Defined Repository Interfaces
 
-Our repository design is based on composable traits with clear responsibilities. The hierarchy is defined in our core library:
-
-```scala
-// Basic service traits
-trait GenericLoadService[Eff[+_], -Key, +Value]:
-    type Op[A] = Eff[A]
-    def load(id: Key): Op[Option[Value]]
-
-trait GenericUpdateNotifyService[Str[+_], Key]:
-    def updates: Str[Key]
-
-trait GenericLoadAllService[Eff[+_], Coll[+_], -Key, +Value]:
-    type Op[A] = Eff[A]
-    def loadAll(ids: Seq[Key]): Op[Coll[Value]]
-
-trait GenericFindService[Eff[+_], Coll[+_], -Key, +Value, -FilterArg]:
-    type Op[A] = Eff[A]
-    def find(filter: FilterArg): Op[Coll[Value]]
-
-// Read repository combines load, loadAll, and find operations
-trait GenericReadRepository[Eff[+_], Coll[+_], -Key, +Value, -FilterArg]
-    extends GenericLoadService[Eff, Key, Value]
-    with GenericLoadAllService[Eff, Coll, Key, Value]
-    with GenericFindService[Eff, Coll, Key, Value, FilterArg]
-
-// Write repository for saving existing entities
-trait GenericWriteRepository[Eff[_], -Key, -Value]:
-    type Op[A] = Eff[A]
-    def save(key: Key, value: Value): Op[Unit]
-
-// Marker trait for creation DTOs
-trait Create[A]
-
-// Repository for creating new entities
-trait GenericCreateRepository[Eff[+_], +Key, -Init]:
-    type Op[A] = Eff[A]
-    def create(value: Init): Op[Key]
-
-// Write repository with key assignment
-trait GenericWriteRepositoryWithKeyAssignment[Eff[+_], +Key, -Value]:
-    type Op[A] = Eff[A]
-    def save(value: Value): Op[Key]
-    def save(value: Key => Value): Op[Key]
-
-// Combined read and write repository
-trait GenericRepository[Eff[+_], -Key, Value]
-    extends GenericReadRepository[Eff, Seq, Key, Value, Unit]
-    with GenericWriteRepository[Eff, Key, Value]
-```
-
-### Key Repository Types
-
-Our framework provides specialized repository types for ZIO integration using `UIO` for operations:
-
-#### Read Operations
+Repository interfaces should be defined in the domain layer and express exactly what the domain needs:
 
 ```scala
-// Basic load repository
-type LoadRepository[-Key, +Value] = GenericLoadService[UIO, Key, Value]
+// In domain layer
+trait UserRepository:
+  // Find methods
+  def findById(id: UserId): IO[UserNotFoundError, User]
+  def findByEmail(email: EmailAddress): IO[Nothing, Option[User]]
+  def findAll: IO[Nothing, Seq[User]]
+  def findByFilters(filter: UserFilter): IO[Nothing, Seq[User]]
 
-// Load multiple entities by keys
-type LoadAllRepository[-Key, +Value] = GenericLoadAllService[UIO, Seq, Key, Value]
-
-// Complete read operations
-trait ReadRepository[-Key, +Value, -FilterArg]
-    extends GenericReadRepository[UIO, Seq, Key, Value, FilterArg]:
-    override def loadAll(ids: Seq[Key]): UIO[Seq[Value]] =
-        // Inefficient implementation, meant to be overridden
-        ZIO.foreach(ids)(load).map(_.flatten)
-
-// Repository for notifications on updates
-trait UpdateNotifyRepository[Key]
-    extends GenericUpdateNotifyService[UStream, Key]
+  // Create/Update methods
+  def create(user: NewUser): IO[UserCreationError, UserId]
+  def update(user: User): IO[UserUpdateError, Unit]
+  def delete(id: UserId): IO[UserNotFoundError, Unit]
 ```
 
-#### Write Operations
+Note how the repository interface:
+- Uses domain types (UserId, User, EmailAddress)
+- Returns domain-specific errors when appropriate
+- Expresses domain-relevant operations
+
+### Error Handling in Repositories
+
+Domain repository interfaces should express meaningful errors that are relevant to the domain. Instead of using `UIO` (which assumes nothing can go wrong), use typed errors to express domain-relevant failure modes:
 
 ```scala
-// Basic write repository
-trait WriteRepository[-Key, -Value]
-    extends GenericWriteRepository[UIO, Key, Value]
-
-// Repository for creating new entities
-trait CreateRepository[+Key, -Init]
-    extends GenericCreateRepository[UIO, Key, Init]
-
-// Write repository with automatic key assignment
-trait WriteRepositoryWithKeyAssignment[Key, -Value]
-    extends GenericWriteRepositoryWithKeyAssignment[UIO, Key, Value]
+sealed trait UserError
+case object UserNotFoundError extends UserError
+case class UserCreationError(reason: String) extends UserError
+case class UserUpdateError(reason: String) extends UserError
 ```
 
-#### Combined Repositories
+This enables the domain to handle specific error cases appropriately:
 
 ```scala
-// Standard read/write repository
-trait Repository[-Key, Value, -FilterArg]
-    extends ReadRepository[Key, Value, FilterArg]
-    with WriteRepository[Key, Value]
-
-// Repository with creation capability
-trait RepositoryWithCreate[Key, Value, -FilterArg, -Init <: Create[Value]]
-    extends ReadRepository[Key, Value, FilterArg]
-    with WriteRepository[Key, Value]
-    with CreateRepository[Key, Init]
-
-// Repository with key generation
-trait RepositoryWithKeyAssignment[Key, Value, -FilterArg]
-    extends ReadRepository[Key, Value, FilterArg]
-    with WriteRepositoryWithKeyAssignment[Key, Value]
+def promoteUser(userId: UserId): IO[UserError, Unit] =
+  for
+    user <- userRepository.findById(userId)
+    updatedUser = user.copy(role = Role.Admin)
+    _ <- userRepository.update(updatedUser)
+  yield ()
 ```
 
-### CQRS Principles
+## CQRS Principles for Repositories
 
-Our repository design follows these CQRS principles:
+Our repository design follows these CQRS (Command Query Responsibility Segregation) principles:
 
 1. **Commands Don't Return Domain Data**
-   - `save` returns `Unit`, not the entity
+   - Commands like `create`, `update`, and `delete` return minimal data (e.g., generated IDs) or just confirmation
    - Maintains separation between commands and queries
 
-2. **Creation Returns Only Keys**
-   - `create` returns the generated key/ID
-   - Requires explicit query to retrieve the created entity
+2. **Creation Returns Only Keys or Success/Failure**
+   - `create` returns the generated key/ID or appropriate error
+   - Requires explicit query to retrieve the created entity if needed
 
 3. **Queries Don't Modify State**
-   - `load`, `find` and other read methods are pure
+   - `find` and other read methods are pure and don't modify state
    - No side effects in query operations
 
 4. **Event Notification via Streams**
-   - `updates` stream for reactive patterns
+   - Consider providing update streams for reactive patterns
    - Subscribers can react to repository changes
 
 ## Implementation with Magnum Library
@@ -197,7 +131,7 @@ object UserRepo:
 object TransactionRepo:
   // For tables with no separate creator class
   val fullRepo = Repo[TransactionDTO, TransactionDTO, Null]
-  
+
   // For tables with auto-generated IDs
   val userRepo = Repo[UserCreator, User, Long]
 ```
@@ -222,7 +156,7 @@ The `Repo` class takes three type parameters:
 
 ## Structure of Repository Implementations
 
-### Basic Structure with Magnum
+### Domain-Aligned Implementation with Magnum
 
 ```scala
 import com.augustnagro.magnum.*
@@ -233,38 +167,42 @@ class PostgreSQLUserRepository(xa: Transactor) extends UserRepository:
   import UserDTO.given
   import UserRepo.repo
 
-  override def findById(id: UserId): UIO[Option[User]] =
+  override def findById(id: UserId): IO[UserNotFoundError, User] =
     xa.connect:
       repo.findById(id.value).map(_.map(_.toDomain))
-    .orDie
-  
-  override def findByEmail(email: EmailAddress): UIO[Option[User]] =
+    .orDieWith(_ => new RuntimeException("Database error"))
+    .flatMap:
+      case Some(user) => ZIO.succeed(user)
+      case None => ZIO.fail(UserNotFoundError(id))
+
+  override def findByEmail(email: EmailAddress): IO[Nothing, Option[User]] =
     xa.connect:
       // Use Magnum's Spec for dynamic queries
       val spec = Spec[UserDTO].where(sql"email = ${email.value}")
       repo.findAll(spec).headOption.map(_.map(_.toDomain))
     .orDie
-  
-  override def findAll: UIO[Seq[User]] =
+
+  override def findAll: IO[Nothing, Seq[User]] =
     xa.connect:
       repo.findAll.map(_.map(_.toDomain).toSeq)
     .orDie
-  
-  override def save(user: User): UIO[Unit] =
+
+  override def update(user: User): IO[UserUpdateError, Unit] =
     xa.transact:
       repo.update(UserDTO.fromDomain(user))
-    .orDie
-  
-  override def create(user: CreateUser): UIO[UserId] =
+    .mapError(e => UserUpdateError(e.getMessage))
+
+  override def create(user: NewUser): IO[UserCreationError, UserId] =
     xa.transact:
-      val dto = UserDTO.fromCreate(user)
+      val dto = UserDTO.fromNewUser(user)
       repo.insertReturning(dto).map(created => UserId(created.id))
-    .orDie
-  
-  override def delete(id: UserId): UIO[Unit] =
+    .mapError(e => UserCreationError(e.getMessage))
+
+  override def delete(id: UserId): IO[UserNotFoundError, Unit] =
+    findById(id).catchAll(_ => ZIO.fail(UserNotFoundError(id))) *>
     xa.transact:
       repo.deleteById(id.value)
-    .orDie
+    .mapError(_ => UserNotFoundError(id))
 
 object UserRepository:
   val layer: ZLayer[Transactor, Nothing, UserRepository] =
@@ -309,14 +247,14 @@ object UserDTO:
     .withFieldComputed(_.role, _.role.toString)
     .withFieldComputed(_.status, _.status.toString)
     .transform
-    
+
   // Conversion from creation DTO
-  def fromCreate(create: CreateUser): UserDTO =
+  def fromNewUser(user: NewUser): UserDTO =
     UserDTO(
       id = 0, // Will be generated by database
-      email = create.email.value,
-      name = create.name,
-      hashedPassword = create.hashedPassword,
+      email = user.email.value,
+      name = user.name,
+      hashedPassword = user.hashedPassword,
       role = UserRole.User.toString,
       status = UserStatus.Active.toString,
       createdAt = Instant.now,
@@ -330,41 +268,45 @@ object UserDTO:
 
 ```scala
 // Domain model
-case class SourceAccount(id: Long, accountId: String, /* other fields */)
+case class Account(id: AccountId, accountNumber: String, /* other fields */)
 
-// Creation DTO
-case class CreateSourceAccount(accountId: String, /* other fields - no ID */)
-  extends Create[SourceAccount]
+// Creation DTO for domain layer
+case class NewAccount(accountNumber: String, /* other fields - no ID */)
+
+// In repository interface (domain layer)
+trait AccountRepository:
+  def create(account: NewAccount): IO[AccountCreationError, AccountId]
+  def findById(id: AccountId): IO[AccountNotFoundError, Account]
 
 // In service layer
-def createNewAccount(account: CreateSourceAccount): UIO[Long] =
+def createNewAccount(account: NewAccount): IO[AccountCreationError, AccountId] =
   for
-    id <- repository.create(account)
+    id <- accountRepository.create(account)
     _ <- logService.info(s"Created account with ID: $id")
   yield id
 
 // If you need the created entity
-def createAndRetrieveAccount(account: CreateSourceAccount): UIO[SourceAccount] =
+def createAndRetrieveAccount(account: NewAccount): IO[AccountError, Account] =
   for
-    id <- repository.create(account)
-    entityOpt <- repository.load(id)
-    entity <- ZIO.fromOption(entityOpt).orElseFail(new RuntimeException(s"Created entity not found: $id"))
+    id <- accountRepository.create(account)
+    entity <- accountRepository.findById(id)
   yield entity
 ```
 
 ### Entity Update Pattern
 
 ```scala
-// In service layer
-def updateAccount(id: Long, account: SourceAccount): UIO[Unit] =
-  repository.save(id, account)
+// In repository interface (domain layer)
+trait AccountRepository:
+  def update(account: Account): IO[AccountUpdateError, Unit]
+  def findById(id: AccountId): IO[AccountNotFoundError, Account]
 
-// When you need to verify entity exists first
-def safeUpdateAccount(id: Long, account: SourceAccount): UIO[Unit] =
+// In service layer
+def updateAccount(id: AccountId, updateData: AccountUpdateData): IO[AccountError, Unit] =
   for
-    existing <- repository.load(id)
-    _ <- ZIO.fromOption(existing).flatMap(_ => repository.save(id, account))
-      .orElseFail(new RuntimeException(s"Entity not found: $id"))
+    existingAccount <- accountRepository.findById(id)
+    updatedAccount = existingAccount.update(updateData)
+    _ <- accountRepository.update(updatedAccount)
   yield ()
 ```
 
@@ -372,22 +314,30 @@ def safeUpdateAccount(id: Long, account: SourceAccount): UIO[Unit] =
 
 ```scala
 // Domain query model
-case class AccountQuery(active: Option[Boolean] = None, /* other filters */)
+case class AccountFilter(status: Option[AccountStatus] = None, /* other filters */)
+
+// In repository interface (domain layer)
+trait AccountRepository:
+  def findByFilters(filter: AccountFilter): IO[Nothing, Seq[Account]]
 
 // In service layer
-def findActiveAccounts(): UIO[Seq[SourceAccount]] =
-  repository.find(AccountQuery(active = Some(true)))
+def findActiveAccounts(): IO[Nothing, Seq[Account]] =
+  accountRepository.findByFilters(AccountFilter(status = Some(AccountStatus.Active)))
 
 // Implementation using Magnum Spec
-override def find(query: AccountQuery): UIO[Seq[SourceAccount]] =
+override def findByFilters(filter: AccountFilter): IO[Nothing, Seq[Account]] =
   xa.connect:
     // Build dynamic query with Magnum's Spec
     val spec = Spec[AccountDTO]
-      .where(query.active.map(active => 
-        sql"status = ${if (active) "ACTIVE" else "INACTIVE"}"
-      ).getOrElse(sql""))
+      .where(
+          filter.status.map(status =>
+              sql"status = ${status.toString}"
+          ).getOrElse(sql"")
+      )
       // Add other conditions as needed
-    
+      .limit(filter.limit.getOrElse(100))
+      .offset(filter.offset.getOrElse(0))
+
     // Execute and convert to domain models
     repo.findAll(spec).map(_.map(_.toDomain).toSeq)
   .orDie
@@ -410,15 +360,15 @@ We have three main infrastructure components for database access:
 For all repository implementations, follow this layer structure pattern:
 
 ```scala
-object PostgreSQLTransactionRepository:
+object PostgreSQLAccountRepository:
     // Repository layer taking only the PostgreSQLTransactor dependency
-    val layer: ZLayer[PostgreSQLTransactor, Nothing, TransactionRepository] =
+    val layer: ZLayer[PostgreSQLTransactor, Nothing, AccountRepository] =
         ZLayer.fromFunction { (ts: PostgreSQLTransactor) =>
-            PostgreSQLTransactionRepository(ts.transactor)
+            PostgreSQLAccountRepository(ts.transactor)
         }
 
     // Full layer including all dependencies from scratch
-    val fullLayer: ZLayer[Scope, Throwable, TransactionRepository] =
+    val fullLayer: ZLayer[Scope, Throwable, AccountRepository] =
         PostgreSQLDataSource.managedLayer >>>
             PostgreSQLTransactor.managedLayer >>>
             layer
@@ -457,15 +407,15 @@ For production code that requires migrations, use the `PostgreSQLDatabaseSupport
 
 ```scala
 // Example of a repository layer that requires migrations to run first
-val repositoryLayerWithMigrations: ZLayer[Scope, Throwable, TransactionRepository] =
-    PostgreSQLDatabaseSupport.layerWithMigrations() >>> 
-        PostgreSQLTransactionRepository.layer
-        
+val repositoryLayerWithMigrations: ZLayer[Scope, Throwable, AccountRepository] =
+    PostgreSQLDatabaseSupport.layerWithMigrations() >>>
+        PostgreSQLAccountRepository.layer
+
 // To specify additional migration locations
-val repositoryLayerWithCustomMigrations: ZLayer[Scope, Throwable, TransactionRepository] =
+val repositoryLayerWithCustomMigrations: ZLayer[Scope, Throwable, AccountRepository] =
     PostgreSQLDatabaseSupport.layerWithMigrations(
         additionalLocations = List("classpath:db/specific-migrations")
-    ) >>> PostgreSQLTransactionRepository.layer
+    ) >>> PostgreSQLAccountRepository.layer
 ```
 
 The `layerWithMigrations` method:
@@ -528,12 +478,12 @@ For repository implementations, always use the `PostgreSQLTransactor.managedLaye
 Use Magnum's `Spec` class for building dynamic queries with multiple optional filter conditions:
 
 ```scala
-override def find(filter: TransactionQuery): UIO[Seq[Transaction]] =
+override def findByFilters(filter: TransactionFilter): IO[Nothing, Seq[Transaction]] =
   xa.connect:
     val spec = Spec[TransactionDTO]
       // Add conditions only when filter values are present
       .where(
-          filter.accountId.map(id => 
+          filter.accountId.map(id =>
               sql"account_id = ${id.value}"
           ).getOrElse(sql"")
       )
@@ -557,7 +507,7 @@ override def find(filter: TransactionQuery): UIO[Seq[Transaction]] =
       .offset(filter.offset.getOrElse(0))
       // Add sorting
       .orderBy(sql"date DESC, created_at DESC")
-    
+
     // Execute and map results
     repo.findAll(spec).map(_.map(_.toDomain).toSeq)
   .orDie
@@ -571,7 +521,7 @@ We have standardized infrastructure for testing repositories using TestContainer
 
 Our `iw-support-sqldb-testing` module provides several key components for testing repositories:
 
-1. **PostgreSQLTestingLayers** - Provides ZLayers for test database infrastructure  
+1. **PostgreSQLTestingLayers** - Provides ZLayers for test database infrastructure
 2. **MigrateAspects** - Test aspects for database schema setup and teardown
 
 ### Standard Repository Testing Pattern
@@ -584,53 +534,65 @@ import zio.test.*
 import works.iterative.sqldb.testing.PostgreSQLTestingLayers.*
 import works.iterative.sqldb.testing.MigrateAspects.*
 
-object PostgreSQLTransactionRepositorySpec extends ZIOSpecDefault:
+object PostgreSQLAccountRepositorySpec extends ZIOSpecDefault:
     // Define layers needed for repository tests
     val repositoryLayer =
-        PostgreSQLTransactionRepository.layer ++
-        PostgreSQLSourceAccountRepository.layer
-  
+        PostgreSQLAccountRepository.layer
+
     def spec = {
-        suite("PostgreSQLTransactionRepository")(
-            test("should save and retrieve a transaction") {
+        suite("PostgreSQLAccountRepository")(
+            test("should save and retrieve an account") {
                 for
                     // Get repository services
-                    repo <- ZIO.service[TransactionRepository]
-                    
+                    repo <- ZIO.service[AccountRepository]
+
                     // Create test data
-                    transaction = createSampleTransaction
-                    
+                    newAccount = NewAccount("12345", "Test Account")
+
                     // Execute operations
-                    _ <- repo.save(transaction.id, transaction)
-                    retrieved <- repo.load(transaction.id)
+                    id <- repo.create(newAccount)
+                    retrieved <- repo.findById(id)
                 yield
                     // Assert results
                     assertTrue(
-                        retrieved.isDefined,
-                        retrieved.get.id == transaction.id
+                        retrieved.accountNumber == "12345",
+                        retrieved.name == "Test Account"
                     )
             },
-            
-            test("should find transactions by filter") {
+
+            test("should find accounts by filter") {
                 for
-                    repo <- ZIO.service[TransactionRepository]
-                    
+                    repo <- ZIO.service[AccountRepository]
+
                     // Create test data
-                    tx1 = createSampleTransaction
-                    tx2 = tx1.copy(id = TransactionId("TX2"), amount = 200.0)
-                    
+                    newAccount1 = NewAccount("12345", "Active Account", status = AccountStatus.Active)
+                    newAccount2 = NewAccount("67890", "Inactive Account", status = AccountStatus.Inactive)
+
                     // Save test data
-                    _ <- repo.save(tx1.id, tx1)
-                    _ <- repo.save(tx2.id, tx2)
-                    
+                    id1 <- repo.create(newAccount1)
+                    id2 <- repo.create(newAccount2)
+
                     // Query with filter
-                    results <- repo.find(TransactionQuery(
-                        amountMin = Some(150.0)
+                    results <- repo.findByFilters(AccountFilter(
+                        status = Some(AccountStatus.Active)
                     ))
                 yield
                     assertTrue(
                         results.size == 1,
-                        results.head.id == tx2.id
+                        results.head.accountNumber == "12345"
+                    )
+            },
+
+            test("should handle domain-specific errors") {
+                for
+                    repo <- ZIO.service[AccountRepository]
+
+                    // Try to find non-existent account
+                    result <- repo.findById(AccountId(999999)).either
+                yield
+                    assertTrue(
+                        result.isLeft,
+                        result.left.toOption.exists(_.isInstanceOf[AccountNotFoundError])
                     )
             }
         // Apply aspects for all tests
@@ -640,7 +602,7 @@ object PostgreSQLTransactionRepositorySpec extends ZIOSpecDefault:
         flywayMigrationServiceLayer,
         repositoryLayer
     )
-end PostgreSQLTransactionRepositorySpec
+end PostgreSQLAccountRepositorySpec
 ```
 
 ### Key Testing Infrastructure Components
@@ -653,25 +615,25 @@ Provides ZLayers for TestContainers and database infrastructure:
 object PostgreSQLTestingLayers:
     // Container for PostgreSQL test database
     val postgresContainer: ZLayer[Scope, Throwable, PostgreSQLContainer] = ...
-    
+
     // DataSource connected to test container
     val dataSourceLayer: ZLayer[Scope, Throwable, DataSource] = ...
-    
+
     // PostgreSQLDataSource layer
     val postgreSQLDataSourceLayer: ZLayer[Scope, Throwable, PostgreSQLDataSource] = ...
-    
+
     // Transactor layer for database operations
     val transactorLayer: ZLayer[Scope, Throwable, Transactor] = ...
-    
+
     // Combined layer with both DataSource and Transactor
     val postgreSQLTransactorLayer: ZLayer[Scope, Throwable, PostgreSQLDataSource & PostgreSQLTransactor] = ...
-    
+
     // Test Flyway config that allows cleaning the database
     val testFlywayConfig = FlywayConfig(
         locations = FlywayConfig.DefaultLocation :: Nil,
         cleanDisabled = false
     )
-    
+
     // Full layer with DataSource, Transactor and FlywayMigrationService
     val flywayMigrationServiceLayer: ZLayer[
         Scope,
@@ -710,7 +672,7 @@ end MigrateAspects
 3. **Layer Structure** - Separate repository layers from infrastructure layers for flexible testing
 4. **Realistic Data** - Test with realistic data samples that cover edge cases
 5. **Query Testing** - Test complex queries with various filter combinations
-6. **Error Handling** - Test error scenarios like constraint violations
+6. **Error Handling** - Test domain-specific error scenarios thoroughly
 
 This approach ensures that repository implementations are thoroughly tested against real PostgreSQL databases with proper schema migrations, while keeping the tests maintainable and reliable.
 
@@ -733,12 +695,14 @@ This approach ensures that repository implementations are thoroughly tested agai
    - Never concatenate strings for SQL
 
 5. **Improper Error Handling**:
-   - Decide on consistent error handling strategy (.orDie vs specific error mapping)
-   - Consider providing meaningful error messages for domain errors
+   - Use domain-specific errors that are meaningful to the application
+   - Map infrastructure errors to domain errors when appropriate
+   - Consider providing detailed error messages for domain errors
 
 6. **Missing Repository Tests**:
    - Always test repositories with real databases using TestContainers
    - Test both happy path and error scenarios
+   - Test domain-specific error handling thoroughly
 
 7. **Not Using DTOs Correctly**:
    - Keep clear separation between domain models and database DTOs
@@ -748,17 +712,26 @@ This approach ensures that repository implementations are thoroughly tested agai
    - Add indexes for commonly queried fields
    - Consider adding indexes for foreign keys
 
+9. **Leaking Persistence Concerns to Domain**:
+   - Repository interfaces should use domain types, not persistence types
+   - Domain shouldn't need to know about database-specific constraints
+
+10. **Using Generic Error Types**:
+    - Avoid using `Nothing` as error type unless truly nothing can go wrong
+    - Define meaningful domain errors for each failure case
+
 ## Checklist
 
 When implementing a repository, ensure:
 
-- [ ] Repository implements the correct repository interface from the domain
+- [ ] Repository implements the domain-defined repository interface
+- [ ] Repository interface uses domain types and domain-relevant error types
 - [ ] DTOs are defined with proper table and column mappings
 - [ ] Conversions between domain models and DTOs are implemented
-- [ ] Error handling strategy is consistent
+- [ ] Error handling strategy maps infrastructure errors to domain errors
 - [ ] Transaction boundaries are properly defined
 - [ ] Dynamic queries use the Spec pattern for flexibility
-- [ ] Integration tests cover all repository methods
-- [ ] CQRS principles are followed (commands don't return data)
+- [ ] Integration tests cover all repository methods and error cases
+- [ ] CQRS principles are followed (commands don't return unnecessary data)
 - [ ] Performance considerations (batch operations, indexes) are addressed
 - [ ] No domain logic mixed with data access logic
