@@ -676,6 +676,126 @@ end MigrateAspects
 
 This approach ensures that repository implementations are thoroughly tested against real PostgreSQL databases with proper schema migrations, while keeping the tests maintainable and reliable.
 
+## Magnum Import Guidelines
+
+When using Magnum with ZIO, be careful with imports to avoid ambiguity errors:
+
+```scala
+// ✅ RECOMMENDED: Specific, controlled imports
+import com.augustnagro.magnum.magzio.*
+import com.augustnagro.magnum.{Spec, Repo}
+
+// ❌ AVOID: Wildcard imports that can cause conflicts
+import com.augustnagro.magnum.*
+import com.augustnagro.magnum.magzio.*
+```
+
+For SQL string interpolation, import only what you need:
+
+```scala
+// ✅ RECOMMENDED: Import only the sql interpolator
+import com.augustnagro.magnum.sql
+
+// In method body:
+val spec = Spec[MyDTO].where(sql"my_column = $value")
+```
+
+When using `orderBy`, prefer the string version with sort order parameter over sql interpolation:
+
+```scala
+// ✅ RECOMMENDED:
+.orderBy("column_name", SortOrder.Desc)
+
+// ❌ AVOID:
+.orderBy(sql"column_name DESC")
+```
+
+## Repository Method Implementation Patterns
+
+### Query Method Pattern
+
+When implementing query methods that return domain entities, follow this pattern:
+
+```scala
+def getById(id: Long): ZIO[Any, DomainError, Entity] =
+    xa.connect {
+        // Database operation returning DTO
+        repo.findById(id).map(_.toDomain)
+    }
+    .orDie  // Convert infrastructure errors to defects
+    .flatMap {
+        case Some(entity) => ZIO.succeed(entity)
+        case None => ZIO.fail(EntityNotFoundError(id))
+    }
+```
+
+### Collection Query Pattern
+
+For methods returning collections, handle the mapping inside the database operation:
+
+```scala
+def getAll(limit: Int): ZIO[Any, Throwable, Seq[Entity]] =
+    xa.connect {
+        val spec = Spec[EntityDTO]
+            .where(sql"active = true")
+            .orderBy("created_at", SortOrder.Desc)
+            .limit(limit)
+        repo.findAll(spec).map(_.toDomain)
+    }.orDie
+```
+
+### Error Handling Pattern
+
+Ensure proper error handling by mapping to domain-specific errors:
+
+```scala
+def save(entity: CreateEntity): ZIO[Any, DomainError, Long] =
+    ZIO.fromEither(entity.validate).flatMap { validEntity =>
+        // Domain validation passed, proceed with database operation
+        xa.transact {
+            repo.insertReturning(EntityDTO.fromCreate(validEntity)).id
+        }.mapError(e => DomainError.CreationFailed(e.getMessage))
+    }
+```
+
+For conditional checks that might fail:
+
+```scala
+existsByField(field).flatMap { exists =>
+    if exists then ZIO.fail(DomainError.DuplicateFieldError(field))
+    else executeOperation()
+}.orDie  // Add orDie for infrastructure errors
+```
+
+## Layer Organization with PostgreSQL Infrastructure
+
+When using the project's PostgreSQL infrastructure components, use the following patterns:
+
+### Repository Layer Definition
+
+```scala
+// Define a layer that requires PostgreSQLTransactor
+val layer: ZLayer[PostgreSQLTransactor, Nothing, YourRepository] =
+    ZLayer.fromFunction { (transactor: PostgreSQLTransactor) =>
+        new PostgreSQLYourRepository(transactor.transactor)
+    }
+```
+
+### Test Specific Layers
+
+For testing, use the test infrastructure and migration aspects:
+
+```scala
+// In test specification:
+yourSpec
+    .provideSomeShared[Scope](
+        PostgreSQLTestingLayers.flywayMigrationServiceLayer,
+        YourRepository.layer
+    ) @@ TestAspect.sequential @@ MigrateAspects.migrate
+```
+
+This ensures proper database setup and teardown for tests.
+
 ## Common Pitfalls
 
 1. **N+1 Query Problem**:
@@ -697,6 +817,7 @@ This approach ensures that repository implementations are thoroughly tested agai
 5. **Improper Error Handling**:
    - Use domain-specific errors that are meaningful to the application
    - Map infrastructure errors to domain errors when appropriate
+   - Add `.orDie` for infrastructure errors that shouldn't propagate as domain errors
    - Consider providing detailed error messages for domain errors
 
 6. **Missing Repository Tests**:
@@ -719,6 +840,18 @@ This approach ensures that repository implementations are thoroughly tested agai
 10. **Using Generic Error Types**:
     - Avoid using `Nothing` as error type unless truly nothing can go wrong
     - Define meaningful domain errors for each failure case
+
+11. **Mishandling Optional Results**:
+    - Always handle `Option` returns from repository methods properly
+    - Convert to domain errors for clear error messages
+
+12. **SQL String Interpolation Issues**:
+    - Be careful with string interpolation in SQL queries
+    - Use `sql"column = $value"` for parameterized queries, not string concatenation
+
+13. **Incorrect Magnum Method Chaining**:
+    - Ensure methods like `map`, `filter`, etc. are called on the right objects
+    - Keep transformations within the database operation block where possible
 
 ## Checklist
 
