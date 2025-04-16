@@ -402,6 +402,113 @@ object ResourceSpec extends ZIOSpecDefault {
 }
 ```
 
+## ZIO Test Environment
+
+ZIO Test provides a rich environment for testing that includes several key features to make testing ZIO applications more effective.
+
+### Test Services
+
+ZIO Test automatically provides test implementations of core ZIO services that allow for more deterministic and controlled testing:
+
+#### Default Test Services
+
+Each test gets the following test service implementations by default:
+
+- **TestClock**: A controllable clock that allows you to manipulate time
+- **TestConsole**: A simulation of console I/O for testing user interaction
+- **TestRandom**: A deterministic random generator with predictable outputs
+- **TestSystem**: Environment variables and system properties for testing
+
+These test services are accessible via the corresponding modules:
+
+```scala
+test("using test services") {
+  for {
+    // Advance time by 10 seconds
+    _ <- TestClock.adjust(10.seconds)
+    // Simulate user input
+    _ <- TestConsole.feedLines("yes")
+    input <- Console.readLine
+    // Get a predictable random number
+    number <- Random.nextInt
+  } yield assertTrue(input == "yes" && number >= 0)
+}
+```
+
+#### Controlling the Test Clock
+
+The test clock is particularly useful for testing time-dependent logic:
+
+```scala
+test("scheduling with test clock") {
+  for {
+    fiber <- ZIO.sleep(10.seconds).timeout(1.second).fork
+    _ <- TestClock.adjust(1.second) // Advance time
+    result <- fiber.join.exit
+  } yield assertTrue(result.isSuccess)
+}
+```
+
+#### Using Live Services
+
+Sometimes you need to use real implementations instead of test ones. Use the appropriate test aspect:
+
+```scala
+test("use real time") {
+  ZIO.sleep(10.millis).as(assertTrue(true))
+} @@ TestAspect.withLiveClock // Uses the real clock instead of the test one
+```
+
+Available "live" aspects:
+
+- `withLiveClock`: Use the system clock instead of the test clock
+- `withLiveConsole`: Use the real console instead of the test one
+- `withLiveRandom`: Use real random generation instead of the test one
+- `withLiveSystem`: Use the real system environment instead of the test one
+
+#### TestSystem Service
+
+The `TestSystem` service allows you to simulate environment variables and system properties:
+
+```scala
+test("test with environment variables") {
+  for {
+    // Set up test environment variables
+    _ <- TestSystem.putEnv("API_KEY", "test-key-123")
+    _ <- TestSystem.putProperty("user.timezone", "UTC")
+    
+    // Test logic that uses environment variables
+    apiKey <- System.env("API_KEY")
+    timezone <- System.property("user.timezone")
+  } yield assertTrue(apiKey.contains("test-key-123") && timezone.contains("UTC"))
+}
+```
+
+#### TestConfig Service
+
+ZIO Test also provides a `TestConfig` service for customizing test behavior:
+
+```scala
+import zio.test.TestConfig
+
+test("custom test config") {
+  for {
+    config <- ZIO.service[TestConfig]
+    repeats = config.repeats  // Number of times to repeat the test
+    retries = config.retries  // Number of retries before failure
+    shrinks = config.shrinks  // Maximum number of shrinks in property testing
+  } yield assertTrue(repeats >= 1 && retries >= 0 && shrinks >= 0)
+}
+```
+
+You can customize test configuration using the `withConfig` test aspect:
+
+```scala
+test("test with custom config") {
+  // Test code
+} @@ TestAspect.withConfig(_.copy(repeats = 10, retries = 3))
+```
+
 ### Layer Isolation and Sharing
 
 A key feature of ZIO Test is how it handles layers:
@@ -523,6 +630,97 @@ object Test2Spec extends ZIOSpecDefault {
   ).provideSomeLayerShared(SharedLayers.testDbLayer)
 }
 ```
+
+## Testing Best Practices
+
+### Test Isolation
+
+Effective tests should be isolated from each other to avoid interdependencies and make failures easier to diagnose:
+
+1. **Reset state between tests**:
+   ```scala
+   test("test with clean state") {
+     for {
+       // Reset any state at the beginning of the test
+       _ <- ZIO.succeed(mockRepository.reset())
+       // Continue with test...
+     } yield assertTrue(true)
+   }
+   ```
+
+2. **Use flexible assertions**:
+   ```scala
+   // Better: Less brittle test that focuses on behavior
+   test("flexible test") {
+     for {
+       id <- service.createEntity(entity)
+     } yield assertTrue(id > 0) // Just verify we got a valid ID
+   }
+   
+   // Avoid: Brittle test that depends on specific values
+   test("brittle test") {
+     for {
+       id <- service.createEntity(entity)
+     } yield assertTrue(id == 1) // Will fail if test order changes
+   }
+   ```
+
+3. **Avoid timestamp-specific assertions**:
+   ```scala
+   // Better: Pattern matching instead of exact timestamp
+   test("timestamp test") {
+     for {
+       label <- service.generateTimeLabel()
+     } yield assertTrue(label.matches("prefix_\\d{8}-\\d{4}"))
+   }
+   ```
+
+4. **Expose test hooks in mock objects**:
+   ```scala
+   // Create testable mock with exposed hooks
+   class TestableRepository extends Repository {
+     var nextId = 1L // Exposed for test manipulation
+     
+     def reset(): Unit = {
+       nextId = 1L
+       items.clear()
+     }
+     
+     // Implementation...
+   }
+   ```
+
+### Clock and Time Handling
+
+Most test failures related to time and timing can be addressed with proper clock management:
+
+1. **Use `TestClock` for controlled time**:
+   ```scala
+   test("time-dependent logic") {
+     for {
+       fiber <- service.scheduleTask().fork
+       _ <- TestClock.adjust(5.minutes)
+       result <- fiber.join
+     } yield assertTrue(result.isCompleted)
+   }
+   ```
+
+2. **Use `withLiveClock` when necessary**:
+   ```scala
+   test("using system time") {
+     for {
+       result <- service.generateTimestamp()
+     } yield assertTrue(result.nonEmpty)
+   } @@ TestAspect.withLiveClock
+   ```
+
+3. **Mock time providers in tests**:
+   ```scala
+   // Provide fixed clock for deterministic tests
+   val fixedTime = LocalDateTime.of(2025, 4, 15, 10, 0)
+   val fixedClock = Clock.fixed(fixedTime.toInstant(ZoneOffset.UTC), ZoneOffset.UTC)
+   val testLayer = ZLayer.succeed(fixedClock) >>> ServiceUnderTest.layer
+   ```
 
 ### Using Before/After Patterns
 
