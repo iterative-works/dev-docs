@@ -558,98 +558,290 @@ Web Modules interact with:
 
 ## Testing Approach
 
-### Tapir Module Testing
+### ZIO-Based Testing with Tapir
 
-Tapir provides excellent testing capabilities through its stub interpreter:
+When testing web modules in our ZIO-based architecture, we use Tapir's stub interpreter with ZIO test. Since our project uses ZIO and zio-json for JSON handling, our tests must be structured to work with these technologies.
+
+#### Setting Up the ZIO Test Environment
 
 ```scala
-import sttp.tapir.server.stub.TapirStubInterpreter
-import sttp.client4.testing.SttpBackendStub
-import sttp.client4.Response
+import sttp.tapir.server.stub4.TapirStubInterpreter
+import sttp.client4.httpclient.zio.HttpClientZioBackend
 import sttp.client4.basicRequest
 import sttp.model.StatusCode
+import zio._
 import zio.test._
 import zio.test.Assertion._
 
 object ProductModuleSpec extends ZIOSpecDefault:
-  val productService = TestProductService()
-  val productModule = new ProductModule(productService)
+  // Define test services as ZLayers
+  val productServiceLayer = ZLayer.succeed(TestProductService())
+  
+  // Create a module for testing
+  val productModule = new ProductModule(???) // Inject dependencies
   
   override def spec = suite("ProductModule")(
     test("GET /products/1 returns product HTML when it exists") {
-      // Create a test client using the stub interpreter
-      val backend = TapirStubInterpreter(SttpBackendStub.synchronous)
-        .whenServerEndpointRunLogic(productModule.productDetailPageRoute)
-        .backend()
-
-      // Execute request
-      val response = basicRequest
-        .get(uri"http://test.example/products/1")
-        .send(backend)
-
-      // Assertions
-      assert(response.code)(equalTo(StatusCode.Ok)) &&
-      assert(response.body.toOption.get)(containsString("<h1>Product Name</h1>"))
+      for
+        // Create ZIO-based backend stub
+        backend <- HttpClientZioBackend.stub
+        
+        // Create stub interpreter with our module's endpoint
+        stubBackend = TapirStubInterpreter(backend)
+          .whenServerEndpoint(productModule.productDetailPageRoute)
+          .thenRunLogic()
+          .backend()
+          
+        // Execute request
+        response <- basicRequest
+          .get(uri"http://test.example/products/1")
+          .send(stubBackend)
+          
+      yield
+        // Assertions
+        assertTrue(response.code == StatusCode.Ok) &&
+        assertTrue(response.body.toOption.get.contains("<h1>Product Name</h1>"))
     },
     
     test("GET /api/products/1 returns product JSON when it exists") {
-      // Create a test client using the stub interpreter
-      val backend = TapirStubInterpreter(SttpBackendStub.synchronous)
-        .whenServerEndpointRunLogic(productModule.getProductApiRoute)
-        .backend()
-
-      // Execute request
-      val response = basicRequest
-        .get(uri"http://test.example/api/products/1")
-        .send(backend)
-
-      // Assertions
-      assert(response.code)(equalTo(StatusCode.Ok)) &&
-      assert(response.body.toOption.get)(containsString("\"name\":\"Product Name\""))
-    },
-    
-    test("GET /api/products/999 returns 404 Not Found for non-existent product") {
-      // Create a test client using the stub interpreter
-      val backend = TapirStubInterpreter(SttpBackendStub.synchronous)
-        .whenServerEndpointRunLogic(productModule.getProductApiRoute)
-        .backend()
-
-      // Execute request
-      val response = basicRequest
-        .get(uri"http://test.example/api/products/999")
-        .send(backend)
-
-      // Assertions
-      assert(response.code)(equalTo(StatusCode.NotFound)) &&
-      assert(response.body.toOption.get)(containsString("NOT_FOUND"))
+      for
+        backend <- HttpClientZioBackend.stub
+        stubBackend = TapirStubInterpreter(backend)
+          .whenServerEndpoint(productModule.getProductApiRoute)
+          .thenRunLogic()
+          .backend()
+          
+        response <- basicRequest
+          .get(uri"http://test.example/api/products/1")
+          .send(stubBackend)
+      yield
+        assertTrue(response.code == StatusCode.Ok) &&
+        assertTrue(response.body.toOption.get.contains("\"name\":\"Product Name\""))
     }
-  )
+  ).provideLayer(productServiceLayer) // Provide test service layer to all tests
 ```
 
-### Testing Error Scenarios
+### Testing with Real Dependencies
+
+For more complete integration tests, you can use `ZIO.serviceWithZIO` to access real services in your test logic:
+
+```scala
+test("GET /api/products integrates with real services") {
+  for
+    backend <- HttpClientZioBackend.stub
+    stubBackend = TapirStubInterpreter(backend)
+      .whenServerEndpoint(productModule.getAllProductsApiRoute)
+      .thenRunLogic()
+      .backend()
+    
+    // Inject dependencies from your test environment
+    _ <- ZIO.serviceWithZIO[ProductService](service => 
+      ZIO.succeed(service.addTestProduct(Product(1, "Test Product", BigDecimal(10.99)))))
+    
+    response <- basicRequest
+      .get(uri"http://test.example/api/products")
+      .send(stubBackend)
+  yield
+    assertTrue(response.code == StatusCode.Ok) &&
+    assertTrue(response.body.toOption.get.contains("Test Product"))
+}.provide(
+  productServiceLayer, 
+  dbConnectionLayer,  // Other layers needed for testing
+  Scope.default       // For resource management
+)
+```
+
+### Testing Advanced Error Handling
+
+For testing error scenarios with our ZIO environment:
+
+```scala
+test("Returns proper errors when service fails") {
+  for
+    backend <- HttpClientZioBackend.stub
+    
+    // Create failing service layer
+    failingService = new ProductService:
+      override def getProductById(id: Long): ZIO[Any, ProductError, Product] =
+        ZIO.fail(ProductNotFoundError(id))
+    
+    failingServiceLayer = ZLayer.succeed(failingService)
+    
+    // Create module with failing service
+    moduleWithFailingService = new ProductModule(???) // Inject failing service
+    
+    stubBackend = TapirStubInterpreter(backend)
+      .whenServerEndpoint(moduleWithFailingService.getProductApiRoute)
+      .thenRunLogic()
+      .backend()
+      
+    response <- basicRequest
+      .get(uri"http://test.example/api/products/1")
+      .send(stubBackend)
+  yield
+    assertTrue(response.code == StatusCode.NotFound) &&
+    assertTrue(response.body.toOption.get.contains("NOT_FOUND"))
+}.provide(failingServiceLayer)
+```
+
+### Testing Validation Errors
+
+For testing validation error scenarios:
 
 ```scala
 test("Returns validation error when required fields are missing") {
-  // Prepare invalid request payload
-  val invalidJson = """{"name":""}"""
-  
-  // Create a test client using the stub interpreter
-  val backend = TapirStubInterpreter(SttpBackendStub.synchronous)
-    .whenServerEndpointRunLogic(module.createProductRoute)
-    .backend()
-
-  // Execute request with invalid payload
-  val response = basicRequest
-    .post(uri"http://test.example/api/products")
-    .body(invalidJson)
-    .contentType("application/json")
-    .send(backend)
-
-  // Assertions
-  assert(response.code)(equalTo(StatusCode.BadRequest)) &&
-  assert(response.body.toOption.get)(containsString("VALIDATION_ERROR"))
+  for
+    backend <- HttpClientZioBackend.stub
+    stubBackend = TapirStubInterpreter(backend)
+      .whenServerEndpoint(productModule.createProductRoute)
+      .thenRunLogic()
+      .backend()
+    
+    // Execute request with invalid payload
+    response <- basicRequest
+      .post(uri"http://test.example/api/products")
+      .body("""{"name":"","price":-1}""")
+      .contentType("application/json")
+      .send(stubBackend)
+  yield
+    assertTrue(response.code == StatusCode.BadRequest) &&
+    assertTrue(response.body.toOption.get.contains("VALIDATION_ERROR"))
 }
 ```
+
+### Testing Custom Interceptors
+
+If your module uses custom interceptors, you can test them specifically:
+
+```scala
+import sttp.tapir.server.interceptor.exception.ExceptionHandler
+import sttp.tapir.server.model.ValuedEndpointOutput
+
+test("Uses custom exception handler") {
+  // Define custom exception handler
+  val exceptionHandler = ExceptionHandler.pure[Task](ctx =>
+    Some(ValuedEndpointOutput(
+      stringBody.and(statusCode),
+      (s"Custom error: ${ctx.e.getMessage}", StatusCode.InternalServerError)
+    ))
+  )
+  
+  // Create custom options with the exception handler
+  val customOptions = ZioHttpServerOptions.customiseInterceptors
+    .exceptionHandler(exceptionHandler)
+    .options
+  
+  for
+    backend <- HttpClientZioBackend.stub
+    stubBackend = TapirStubInterpreter(customOptions, backend)
+      .whenEndpoint(productModule.getProductApiEndpoint)
+      .thenThrowException(new RuntimeException("test error"))
+      .backend()
+    
+    response <- basicRequest
+      .get(uri"http://test.example/api/products/1")
+      .send(stubBackend)
+  yield
+    assertTrue(response.code == StatusCode.InternalServerError) &&
+    assertTrue(response.body.toOption.get.contains("Custom error: test error"))
+}
+```
+
+### Recording and Verifying Requests
+
+For more complex tests, you can record and verify all interactions with the backend:
+
+```scala
+import sttp.client4.testing.RecordingBackend
+
+test("Records all API interactions") {
+  for
+    backend <- HttpClientZioBackend.stub
+    recordingBackend = RecordingBackend(backend)
+    
+    stubBackend = TapirStubInterpreter(recordingBackend)
+      .whenServerEndpoint(productModule.getAllProductsApiRoute)
+      .thenRunLogic()
+      .backend()
+    
+    _ <- basicRequest
+      .get(uri"http://test.example/api/products")
+      .send(stubBackend)
+    
+    _ <- basicRequest
+      .get(uri"http://test.example/api/products/1")
+      .send(stubBackend)
+  yield
+    // Verify that exactly two requests were made
+    assertTrue(recordingBackend.allInteractions.size == 2) &&
+    // Verify specific request paths
+    assertTrue(recordingBackend.allInteractions.exists(_._1.uri.path.endsWith(List("products")))) &&
+    assertTrue(recordingBackend.allInteractions.exists(_._1.uri.path.endsWith(List("products", "1"))))
+}
+```
+
+### Testing OpenAPI Documentation
+
+To verify that your endpoints match the OpenAPI documentation:
+
+```scala
+import sttp.tapir.docs.openapi.OpenAPIVerifier
+
+test("API implementation matches OpenAPI specification") {
+  // Get the OpenAPI spec (from file or generated)
+  val openApiSpec = """
+    openapi: 3.0.0
+    info:
+      title: Product API
+      version: 1.0.0
+    paths:
+      /api/products:
+        get:
+          summary: Get all products
+          responses:
+            "200":
+              description: List of products
+              content:
+                application/json:
+                  schema:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Product'
+    components:
+      schemas:
+        Product:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+            price:
+              type: number
+  """
+  
+  // Get all endpoints from the module
+  val endpoints = productModule.endpoints
+  
+  // Verify that server endpoints match the OpenAPI spec
+  val issues = OpenAPIVerifier.verifyServer(endpoints, openApiSpec)
+  
+  assertTrue(issues.isEmpty)
+}
+```
+
+### Test Checklist
+
+When writing tests for your web modules, ensure you cover:
+
+- ✓ Happy path scenarios for all endpoints
+- ✓ Error handling for expected failure cases
+- ✓ Validation errors for invalid inputs
+- ✓ Custom interceptor behavior
+- ✓ Content negotiation (if supported)
+- ✓ Authentication and authorization (if applicable)
+- ✓ Environment composition with proper ZLayers
+- ✓ OpenAPI specification compliance
 
 ## OpenAPI Documentation
 
