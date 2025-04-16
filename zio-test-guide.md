@@ -402,6 +402,128 @@ object ResourceSpec extends ZIOSpecDefault {
 }
 ```
 
+### Layer Isolation and Sharing
+
+A key feature of ZIO Test is how it handles layers:
+
+- When you use `.provideLayer()` on a test suite, ZIO Test automatically creates a **fresh layer for each test** within the suite - state is isolated by default
+- Only when you explicitly use the `Shared` variants like `.provideLayerShared()` will state be shared across tests
+
+#### Default Isolation
+
+By default, tests get isolated layers when you use `.provideLayer()` on a suite:
+
+```scala
+object IsolatedByDefaultSpec extends ZIOSpecDefault {
+  def createTestRepo(): MyRepository = new MyRepository {
+    // This factory will be called for EACH test
+  }
+
+  def spec = suite("Isolated Tests")(
+    test("test1") {
+      // Gets a fresh repository
+    },
+    
+    test("test2") {
+      // Also gets a fresh repository, independent of test1
+    }
+  ).provideLayer(ZLayer.succeed(createTestRepo()))
+}
+```
+
+#### Explicit Sharing
+
+To intentionally share state between tests, you must use the `Shared` variants:
+
+```scala
+object ExplicitSharingSpec extends ZIOSpecDefault {
+  val sharedRepo = new MyRepository {
+    // This repository instance will be shared across all tests
+  }
+
+  def spec = suite("Shared State Tests")(
+    test("test1") {
+      // Modifies state in the shared repository
+    },
+    
+    test("test2") {
+      // Can observe changes made by test1
+    }
+  ).provideLayerShared(ZLayer.succeed(sharedRepo))
+}
+```
+
+#### Sharing Specific Services
+
+You can also share only specific parts of your test environment:
+
+```scala
+object PartialSharingSpec extends ZIOSpecDefault {
+  // Shared database but isolated repositories
+  val sharedDbLayer = ZLayer.succeed(new TestDatabase())
+  def createRepoLayer = ZLayer.fromFunction(db => new TestRepository(db))
+
+  def spec = suite("Partial Sharing Tests")(
+    test("test1") {
+      // Uses shared DB but isolated repository
+    },
+    test("test2") {
+      // Same shared DB but different repository instance
+    }
+  ).provideSomeLayerShared(sharedDbLayer) // DB shared
+   .provideSomeLayer(createRepoLayer)      // Repo isolated
+}
+```
+
+#### Sharing Layers Between Tests
+
+When you want to share specific components between tests (e.g., database connection):
+
+```scala
+object SharedLayerSpec extends ZIOSpecDefault {
+  // Shared database connection
+  val dbLayer = ZLayer.scoped(
+    ZIO.acquireRelease(
+      DbConnection.create()
+    )(conn => conn.close())
+  )
+
+  def spec = suite("Database Tests")(
+    test("test1") {
+      // Test code
+    },
+    test("test2") {
+      // Test code
+    }
+  ).provideSomeLayerShared(dbLayer) // Shared across all tests
+}
+```
+
+#### Sharing Layers Between Files
+
+For larger test suites, you can share layers between multiple test files:
+
+```scala
+// In SharedLayers.scala
+object SharedLayers {
+  val testDbLayer = ZLayer.succeed(new TestDatabase())
+}
+
+// In Test1Spec.scala
+object Test1Spec extends ZIOSpecDefault {
+  def spec = suite("Test Suite 1")(
+    // Tests
+  ).provideSomeLayerShared(SharedLayers.testDbLayer)
+}
+
+// In Test2Spec.scala
+object Test2Spec extends ZIOSpecDefault {
+  def spec = suite("Test Suite 2")(
+    // Tests
+  ).provideSomeLayerShared(SharedLayers.testDbLayer)
+}
+```
+
 ### Using Before/After Patterns
 
 ```scala
