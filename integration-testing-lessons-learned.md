@@ -184,6 +184,32 @@ test("should create and retrieve a complete snapshot") {
 - Arrange-Act-Assert pattern makes test structure clear
 - Comments help separate sections when needed
 
+### 9. Aspect and layer composition order
+
+**Lesson:** The order of `provide` methods and TestAspect composition with `@@` does matter as soon as the aspect itself depends on some services.
+
+**Original issue:**
+
+```scala
+...
+) @@ MigrateAspects.migrate @@ TestAspect.sequential @@ TestAspect.withLiveEnv).provideSome[Scope](
+    // db layers needing environment
+) // Failing with None.get, because the live environment is not available to the layers
+```
+
+**Fixed approach:**
+
+```scala
+...
+) @@ MigrateAspects.migrate @@ TestAspect.sequential).provideSome[Scope](
+    // db layers needing environment
+) @@ TestAspect.withLiveEnv // Working, the layers are now included in the live env
+```
+
+**Explanation:**
+- The aspects wrap the preceding effect and change some aspect, like access to services etc. Therefore they need to wrap the complete effect they need to update.
+
+
 ## Common Integration Testing Pitfalls
 
 1. **Not Cleaning Database Between Tests**
