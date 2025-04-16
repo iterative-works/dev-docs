@@ -1,8 +1,8 @@
 ---
-status: ai-generated
+status: draft
 created: 2025-04-09
-last_updated: 2025-04-09
-version: 0.1
+last_updated: 2025-04-16
+version: 0.2
 tags:
   - zio
   - testing
@@ -13,6 +13,8 @@ tags:
 > This is AI-generated content pending human review.
 
 # ZIO Test Guide
+
+This guide provides help for creating ZIO tests in our software. If in trouble, make sure to see also [[integration-testing-lessons-learned]] for tips how to solve common issues.
 
 ## Introduction
 
@@ -476,7 +478,7 @@ test("test with environment variables") {
     // Set up test environment variables
     _ <- TestSystem.putEnv("API_KEY", "test-key-123")
     _ <- TestSystem.putProperty("user.timezone", "UTC")
-    
+
     // Test logic that uses environment variables
     apiKey <- System.env("API_KEY")
     timezone <- System.property("user.timezone")
@@ -530,7 +532,7 @@ object IsolatedByDefaultSpec extends ZIOSpecDefault {
     test("test1") {
       // Gets a fresh repository
     },
-    
+
     test("test2") {
       // Also gets a fresh repository, independent of test1
     }
@@ -552,7 +554,7 @@ object ExplicitSharingSpec extends ZIOSpecDefault {
     test("test1") {
       // Modifies state in the shared repository
     },
-    
+
     test("test2") {
       // Can observe changes made by test1
     }
@@ -656,7 +658,7 @@ Effective tests should be isolated from each other to avoid interdependencies an
        id <- service.createEntity(entity)
      } yield assertTrue(id > 0) // Just verify we got a valid ID
    }
-   
+
    // Avoid: Brittle test that depends on specific values
    test("brittle test") {
      for {
@@ -680,12 +682,12 @@ Effective tests should be isolated from each other to avoid interdependencies an
    // Create testable mock with exposed hooks
    class TestableRepository extends Repository {
      var nextId = 1L // Exposed for test manipulation
-     
+
      def reset(): Unit = {
        nextId = 1L
        items.clear()
      }
-     
+
      // Implementation...
    }
    ```
@@ -856,11 +858,11 @@ test("no flakiness") {
 #### Timeouts
 
 - Increase timeout duration for slow tests:
-    
+
     ```scala
     test("slow test") {  // Test code} @@ timeout(2.minutes)
     ```
-    
+
 
 #### Resource Leaks
 
