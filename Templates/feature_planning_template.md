@@ -1,9 +1,11 @@
 ---
-status: draft
-last updated: {{DATE}}
+status: ai-generated
+last updated:
+  "{ DATE }": 
 version: "0.1"
 ---
-
+> [!robot] AI-Generated Content
+> This is AI-generated content pending human review. Information may be inaccurate or misaligned with actual processes.
 # Feature Implementation Plan: {{FEATURE_NAME}}
 
 ## Feature Overview
