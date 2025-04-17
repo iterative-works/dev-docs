@@ -678,35 +678,25 @@ This approach ensures that repository implementations are thoroughly tested agai
 
 ## Magnum Import Guidelines
 
-When using Magnum with ZIO, be careful with imports to avoid ambiguity errors:
+When using Magnum with ZIO, be careful with imports to avoid ambiguity errors. Import all from magnum, but override with specific import of Transactor from magzio.
 
 ```scala
-// ✅ RECOMMENDED: Specific, controlled imports
-import com.augustnagro.magnum.magzio.*
-import com.augustnagro.magnum.{Spec, Repo}
+// ✅ RECOMMENDED: Import just Transactor from magzio
+import com.augustnagro.magnum.*
+import com.augustnagro.magnum.magzio.Transactor
 
 // ❌ AVOID: Wildcard imports that can cause conflicts
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.*
 ```
 
-For SQL string interpolation, import only what you need:
-
-```scala
-// ✅ RECOMMENDED: Import only the sql interpolator
-import com.augustnagro.magnum.sql
-
-// In method body:
-val spec = Spec[MyDTO].where(sql"my_column = $value")
-```
-
-When using `orderBy`, prefer the string version with sort order parameter over sql interpolation:
+When using `orderBy`, there is a method on Spec to do that:
 
 ```scala
 // ✅ RECOMMENDED:
 .orderBy("column_name", SortOrder.Desc)
 
-// ❌ AVOID:
+// ❌ AVOID: this does not work
 .orderBy(sql"column_name DESC")
 ```
 
@@ -785,9 +775,9 @@ case class CreateEntityDTO(
 
 object EntityDTO:
     // Convert from domain to DTO
-    def fromDomain(entity: Entity): EntityDTO = 
+    def fromDomain(entity: Entity): EntityDTO =
         EntityDTO(entity.id, entity.name, Timestamp.valueOf(entity.createdAt))
-        
+
     // Create DTO from creation data
     def fromCreate(create: CreateEntity): CreateEntityDTO =
         CreateEntityDTO(create.name, Timestamp.valueOf(LocalDateTime.now()))
@@ -830,7 +820,7 @@ def update(update: UpdateEntity): ZIO[Any, DomainError, Unit] =
             _ <- validateUpdate(current, update)
             updated = update.applyTo(current)
         yield repo.update(EntityDTO.fromDomain(updated))
-        
+
         process match
             case Left(err) => throw err
             case _         => ()
