@@ -1,7 +1,7 @@
 ---
 status: draft
-last updated: 2025-04-17
-version: "0.2"
+last updated: 2025-04-18
+version: "0.3"
 tags:
   - workflow
   - process
@@ -199,11 +199,13 @@ graph TD
 
 ### 5. Implementation Phase
 
-**Objective**: Develop the feature according to the Implementation Plan, following the value delivery sequence.
+**Objective**: Develop the feature according to the Implementation Plan, following the value delivery sequence and component architecture.
 
 **Key Templates**:
 - [Handoff Protocol Template](Templates/handoff_protocol_template.md)
 - [Progress Tracking Template](Templates/progress_tracking_template.md)
+- [Implementation Workflow Guide](implementation_workflow_guide.md)
+- Component Development Guides (various guides for each component type)
 
 **Steps**:
 
@@ -211,18 +213,47 @@ graph TD
    - Complete the Handoff Protocol checklist
    - Set up Progress Tracking document
    - Create development branch
+   - Configure development environment
 
-2. **Implement in Value-Driven Increments**:
-   - Implement the Minimum Viable Solution (MVS) first
-   - Validate MVS with stakeholders before proceeding
-   - Implement subsequent value increments in priority order
-   - Update Progress Tracking document regularly
-   - Develop according to project coding standards
-   - Write unit, integration, and E2E tests
+2. **Implement Foundation Components**:
+   - Develop components required for technical reasons first
+   - Follow appropriate component guide for each component type
+   - Test each component thoroughly
+   - Update Progress Tracking document after each component
 
-3. **Code Review**:
+3. **Implement in Value-Driven Increments**:
+   - **Minimum Viable Solution (MVS)**:
+     - Develop components required for the MVS
+     - Follow component-specific development guides
+     - Update Progress Tracking document for each component
+     - Validate MVS with stakeholders before proceeding
+
+   - **Value Increment 1**:
+     - Develop components for the first value increment
+     - Follow layer-by-layer implementation approach:
+       1. Domain Layer components first
+       2. Application Layer components next
+       3. Infrastructure Layer components
+       4. UI/Presentation Layer components last
+     - Update Progress Tracking document for each component
+     - Validate increment with stakeholders
+
+   - **Subsequent Value Increments**:
+     - Implement remaining value increments in priority order
+     - Follow component-specific development guides
+     - Update Progress Tracking after each component
+     - Validate each increment with stakeholders
+
+4. **Integration and Review**:
+   - Ensure all components work together properly
+   - Conduct thorough integration testing
+   - Update documentation as needed
+   - Prepare for Code Review
+
+5. **Code Review**:
    - Submit code for review
    - Address review feedback
+   - Ensure architectural compliance
    - Update documentation as needed
 
 **Responsible Roles**:
@@ -236,6 +267,32 @@ graph TD
 - Completed test suite
 - Updated Progress Tracking document
 - Value increments ready for testing
+
+**Component-Driven Development Approach**:
+
+For each component to be implemented:
+
+1. **Component Planning**:
+   - Identify the component's architectural category (Entity, Value Object, Repository, etc.)
+   - Review relevant component guide for that category
+   - Define test cases based on acceptance criteria
+
+2. **Component Development**:
+   - Start with interfaces before implementations
+   - Write tests before implementation code
+   - Follow the specific guide for the component's architectural category
+   - Focus on the component's single responsibility
+
+3. **Component Testing**:
+   - Test the component thoroughly
+   - Verify behavior in isolation and in context
+   - Test error handling and edge cases
+
+4. **Progress Update**:
+   - Update Progress Tracking document
+   - Document any deviations or issues
+
+This component-driven approach ensures each part of the feature is developed according to architectural standards while focusing on incremental business value delivery.
 
 ### 6. Testing & Review Phase
 
@@ -346,6 +403,14 @@ When working with AI agents in the development workflow, special considerations 
 - Ask AI to focus on core value-delivering components first
 - Have AI explain how its implementation aligns with business value priorities
 
+### 6. Component-Driven Development with AI
+
+- Provide AI agents with the specific component guide for the type being implemented
+- Ask AI to focus on one component at a time
+- Have AI explain how it's following the architectural guidelines
+- Review AI-generated code for architectural compliance
+- Use component-specific prompt templates for consistent results
+
 ## Content Maturity Levels
 
 As specified in our [Content Maturity Framework](Content%20Maturity%20Framework.md), all documentation follows these maturity levels:
@@ -378,6 +443,12 @@ To ensure adherence to this workflow:
    - All feature implementations must have associated documentation
    - All deployed features must have updated and accurate documentation
 
+4. **Component Compliance Checks**:
+   - Pull requests include component category tags
+   - Code reviews verify compliance with component-specific guidelines
+   - Automated tests check for architectural boundary violations
+   - Documentation must reference appropriate component guides
+
 ## Templates
 
 The following templates support this workflow:
@@ -389,6 +460,8 @@ The following templates support this workflow:
 5. [Feature Implementation Plan Template](Templates/feature_planning_template.md)
 6. [Handoff Protocol Template](Templates/handoff_protocol_template.md)
 7. [Progress Tracking Template](Templates/progress_tracking_template.md)
+8. [Implementation Workflow Guide](implementation_workflow_guide.md)
+9. Component Development Guides (various guides in the Guides directory)
 
 ## Document History
 
@@ -396,3 +469,4 @@ The following templates support this workflow:
 |---------|------|---------|--------|
 | 0.1 | 2025-04-16 | Initial draft | Claude |
 | 0.2 | 2025-04-17 | Added Business Value Decomposition phase | Claude |
+| 0.3 | 2025-04-18 | Enhanced Implementation Phase with component-driven approach | Claude |
